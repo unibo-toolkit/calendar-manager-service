@@ -70,6 +70,8 @@ func (s *Server) registerRoutes() {
 	authed.DELETE("/:id", s.handleDeleteCalendar)
 	authed.POST("/:id/claim", s.handleClaimCalendar)
 
+	calendars.GET("/public/:slug", s.handleGetPublicCalendar)
+
 	s.GET("/cal/:slug", s.handleGetICS)
 }
 
@@ -220,6 +222,18 @@ func (s *Server) handleClaimCalendar(c *gin.Context) {
 	userID := c.GetString("user_id")
 
 	result, err := s.service.ClaimCalendar(c.Request.Context(), userID, id)
+	if err != nil {
+		s.handleError(c, err)
+		return
+	}
+
+	c.JSON(200, result)
+}
+
+func (s *Server) handleGetPublicCalendar(c *gin.Context) {
+	slug := c.Param("slug")
+
+	result, err := s.service.GetPublicCalendar(c.Request.Context(), slug)
 	if err != nil {
 		s.handleError(c, err)
 		return
