@@ -463,6 +463,231 @@ func (s *Service) ClaimCalendar(ctx context.Context, userID, calendarID string) 
 	return s.buildCalendarResponse(ctx, claimed)
 }
 
+type PublicCalendarResponse struct {
+	Name         string               `json:"name"`
+	Slug         string               `json:"slug"`
+	Lang         string               `json:"lang"`
+	Courses      []CourseResponseItem `json:"courses"`
+	Events       []PublicEventItem    `json:"events"`
+	FromDate     time.Time            `json:"from_date"`
+	ToDate       time.Time            `json:"to_date"`
+	TotalEvents  int                  `json:"total_events"`
+	Target       *PublicEventTarget   `json:"target"`
+	TTLExpiresAt time.Time            `json:"ttl_expires_at"`
+	CreatedAt    time.Time            `json:"created_at"`
+}
+
+type PublicEventItem struct {
+	ID            string         `json:"id"`
+	SubjectID     string         `json:"subject_id"`
+	Title         string         `json:"title"`
+	StartDatetime time.Time      `json:"start_datetime"`
+	EndDatetime   time.Time      `json:"end_datetime"`
+	Professor     *string        `json:"professor"`
+	ModuleCode    *string        `json:"module_code"`
+	Credits       *float64       `json:"credits"`
+	IsRemote      bool           `json:"is_remote"`
+	TeamsLink     *string        `json:"teams_link"`
+	Notes         *string        `json:"notes"`
+	GroupID       *string        `json:"group_id"`
+	Classroom     *ClassroomData `json:"classroom"`
+}
+
+type ClassroomData struct {
+	Name      string   `json:"name"`
+	Address   *string  `json:"address"`
+	Latitude  *float64 `json:"latitude"`
+	Longitude *float64 `json:"longitude"`
+}
+
+type PublicEventTarget struct {
+	ID            string    `json:"id"`
+	SubjectID     string    `json:"subject_id"`
+	Title         string    `json:"title"`
+	StartDatetime time.Time `json:"start_datetime"`
+	EndDatetime   time.Time `json:"end_datetime"`
+}
+
+func (s *Service) GetPublicCalendar(ctx context.Context, slug string) (*PublicCalendarResponse, error) {
+	log := s.log.With("op", "GetPublicCalendar", "slug", slug)
+	log.Info("getting public calendar")
+
+	cal, err := s.storage.GetCalendarBySlug(ctx, slug)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrCalendarNotFound
+		}
+		return nil, fmt.Errorf("get calendar by slug: %w", err)
+	}
+
+	if cal.TtlExpiresAt.Valid && time.Now().After(cal.TtlExpiresAt.Time) {
+		return nil, ErrCalendarExpired
+	}
+
+	courses, err := s.storage.GetCalendarCoursesWithDetails(ctx, cal.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get courses: %w", err)
+	}
+
+	courseIDs := make([]pgtype.UUID, len(courses))
+	for i, c := range courses {
+		courseIDs[i] = c.CalendarCourseID
+	}
+
+	var subjects []db.GetCalendarSubjectsRow
+	if len(courseIDs) > 0 {
+		subjects, err = s.storage.GetCalendarSubjects(ctx, courseIDs)
+		if err != nil {
+			return nil, fmt.Errorf("get subjects: %w", err)
+		}
+	}
+
+	now := time.Now()
+	var fromDate, toDate time.Time
+
+	closest, err := s.storage.GetClosestUpcomingEvent(ctx, db.GetClosestUpcomingEventParams{
+		CalendarID:    cal.ID,
+		StartDatetime: pgtype.Timestamptz{Time: now, Valid: true},
+	})
+	if err == nil && closest.Valid {
+		fromDate = closest.Time.AddDate(0, 0, -7)
+		toDate = closest.Time.AddDate(0, 0, 14)
+	} else {
+		fromDate = now.AddDate(0, 0, -7)
+		toDate = now.AddDate(0, 0, 14)
+	}
+
+	events, err := s.storage.GetPublicCalendarEvents(ctx, db.GetPublicCalendarEventsParams{
+		CalendarID:      cal.ID,
+		StartDatetime:   pgtype.Timestamptz{Time: fromDate, Valid: true},
+		StartDatetime_2: pgtype.Timestamptz{Time: toDate, Valid: true},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get public events: %w", err)
+	}
+
+	eventItems := make([]PublicEventItem, len(events))
+	var target *PublicEventTarget
+	for i, e := range events {
+		item := PublicEventItem{
+			ID:            pgtypeUUIDToString(e.ID),
+			SubjectID:     pgtypeUUIDToString(e.SubjectID),
+			Title:         e.Title,
+			StartDatetime: e.StartDatetime.Time,
+			EndDatetime:   e.EndDatetime.Time,
+			Professor:     pgtypeTextToPtr(e.Professor),
+			ModuleCode:    pgtypeTextToPtr(e.ModuleCode),
+			IsRemote:      e.IsRemote,
+			TeamsLink:     pgtypeTextToPtr(e.TeamsLink),
+			Notes:         pgtypeTextToPtr(e.Notes),
+			GroupID:       pgtypeTextToPtr(e.GroupID),
+		}
+
+		if e.Credits.Valid {
+			c, ok := numericToFloat(e.Credits)
+			if ok {
+				item.Credits = &c
+			}
+		}
+
+		if e.ClassroomName.Valid {
+			classroom := &ClassroomData{Name: e.ClassroomName.String}
+			classroom.Address = pgtypeTextToPtr(e.ClassroomAddress)
+			if e.Latitude.Valid {
+				lat, ok := numericToFloat(e.Latitude)
+				if ok {
+					classroom.Latitude = &lat
+				}
+			}
+			if e.Longitude.Valid {
+				lon, ok := numericToFloat(e.Longitude)
+				if ok {
+					classroom.Longitude = &lon
+				}
+			}
+			item.Classroom = classroom
+		}
+
+		eventItems[i] = item
+
+		if target == nil && e.StartDatetime.Valid && e.StartDatetime.Time.After(now) {
+			target = &PublicEventTarget{
+				ID:            pgtypeUUIDToString(e.ID),
+				SubjectID:     pgtypeUUIDToString(e.SubjectID),
+				Title:         e.Title,
+				StartDatetime: e.StartDatetime.Time,
+				EndDatetime:   e.EndDatetime.Time,
+			}
+		}
+	}
+
+	subjectsByCC := make(map[[16]byte][]SubjectResponse)
+	for _, sub := range subjects {
+		key := sub.CalendarCourseID.Bytes
+		var moduleCode *string
+		if sub.ModuleCode.Valid {
+			moduleCode = &sub.ModuleCode.String
+		}
+		var credits *int16
+		if sub.Credits.Valid {
+			credits = &sub.Credits.Int16
+		}
+		var professor *string
+		if sub.Professor.Valid {
+			professor = &sub.Professor.String
+		}
+		subjectsByCC[key] = append(subjectsByCC[key], SubjectResponse{
+			ID:         pgtypeUUIDToString(sub.SubjectID),
+			Title:      sub.Title,
+			ModuleCode: moduleCode,
+			Credits:    credits,
+			Professor:  professor,
+		})
+	}
+
+	courseItems := make([]CourseResponseItem, len(courses))
+	for i, c := range courses {
+		subs := subjectsByCC[c.CalendarCourseID.Bytes]
+		if subs == nil {
+			subs = []SubjectResponse{}
+		}
+		var titleEn *string
+		if c.CourseTitleEn.Valid {
+			titleEn = &c.CourseTitleEn.String
+		}
+		courseItems[i] = CourseResponseItem{
+			ID: pgtypeUUIDToString(c.CalendarCourseID),
+			Curriculum: CurriculumResponse{
+				ID:           pgtypeUUIDToString(c.CurriculumID),
+				Code:         c.CurriculumCode,
+				AcademicYear: c.AcademicYear,
+				Label:        c.CurriculumLabel,
+				Course: CourseResponse{
+					ID:      pgtypeUUIDToString(c.CourseID),
+					TitleIt: c.CourseTitleIt,
+					TitleEn: titleEn,
+				},
+			},
+			Subjects: subs,
+		}
+	}
+
+	log.Info("public calendar retrieved", "events_count", len(eventItems))
+	return &PublicCalendarResponse{
+		Name:         cal.Name,
+		Slug:         cal.Slug,
+		Lang:         cal.Lang,
+		Courses:      courseItems,
+		Events:       eventItems,
+		FromDate:     fromDate,
+		ToDate:       toDate,
+		TotalEvents:  len(eventItems),
+		Target:       target,
+		TTLExpiresAt: cal.TtlExpiresAt.Time,
+		CreatedAt:    cal.CreatedAt.Time,
+	}, nil
+}
+
 func (s *Service) validateAndInsertCourses(ctx context.Context, qtx *db.Queries, calendarID pgtype.UUID, courses []CourseInputItem) error {
 	for i, course := range courses {
 		currID := uuidToPgtype(course.CurriculumID)
@@ -651,4 +876,15 @@ func pgtypeTextToPtr(t pgtype.Text) *string {
 		return nil
 	}
 	return &t.String
+}
+
+func numericToFloat(n pgtype.Numeric) (float64, bool) {
+	if !n.Valid {
+		return 0, false
+	}
+	f, err := n.Float64Value()
+	if err != nil {
+		return 0, false
+	}
+	return f.Float64, true
 }

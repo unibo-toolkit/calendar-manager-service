@@ -11,6 +11,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getClosestUpcomingEvent = `-- name: GetClosestUpcomingEvent :one
+SELECT te.start_datetime
+FROM timetable_events te
+WHERE te.subject_id IN (
+    SELECT cs.subject_id
+    FROM calendar_subjects cs
+    JOIN calendar_courses cc ON cc.id = cs.calendar_course_id
+    WHERE cc.calendar_id = $1
+)
+  AND te.start_datetime >= $2
+ORDER BY te.start_datetime
+LIMIT 1
+`
+
+type GetClosestUpcomingEventParams struct {
+	CalendarID    pgtype.UUID        `json:"calendar_id"`
+	StartDatetime pgtype.Timestamptz `json:"start_datetime"`
+}
+
+func (q *Queries) GetClosestUpcomingEvent(ctx context.Context, arg GetClosestUpcomingEventParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getClosestUpcomingEvent, arg.CalendarID, arg.StartDatetime)
+	var start_datetime pgtype.Timestamptz
+	err := row.Scan(&start_datetime)
+	return start_datetime, err
+}
+
 const getEventsForCalendar = `-- name: GetEventsForCalendar :many
 SELECT
     te.id AS timetable_event_id,
@@ -81,6 +107,99 @@ func (q *Queries) GetEventsForCalendar(ctx context.Context, calendarID pgtype.UU
 			&i.Notes,
 			&i.GroupID,
 			&i.Sequence,
+			&i.ClassroomName,
+			&i.ClassroomAddress,
+			&i.Latitude,
+			&i.Longitude,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPublicCalendarEvents = `-- name: GetPublicCalendarEvents :many
+SELECT
+    te.id,
+    te.subject_id,
+    te.title,
+    te.start_datetime,
+    te.end_datetime,
+    te.professor,
+    te.module_code,
+    te.credits,
+    te.is_remote,
+    te.teams_link,
+    te.notes,
+    te.group_id,
+    c.name AS classroom_name,
+    c.address AS classroom_address,
+    c.latitude,
+    c.longitude
+FROM timetable_events te
+LEFT JOIN classrooms c ON c.id = te.classroom_id
+WHERE te.subject_id IN (
+    SELECT cs.subject_id
+    FROM calendar_subjects cs
+    JOIN calendar_courses cc ON cc.id = cs.calendar_course_id
+    WHERE cc.calendar_id = $1
+)
+  AND te.start_datetime >= $2
+  AND te.start_datetime <= $3
+ORDER BY te.start_datetime
+`
+
+type GetPublicCalendarEventsParams struct {
+	CalendarID      pgtype.UUID        `json:"calendar_id"`
+	StartDatetime   pgtype.Timestamptz `json:"start_datetime"`
+	StartDatetime_2 pgtype.Timestamptz `json:"start_datetime_2"`
+}
+
+type GetPublicCalendarEventsRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	SubjectID        pgtype.UUID        `json:"subject_id"`
+	Title            string             `json:"title"`
+	StartDatetime    pgtype.Timestamptz `json:"start_datetime"`
+	EndDatetime      pgtype.Timestamptz `json:"end_datetime"`
+	Professor        pgtype.Text        `json:"professor"`
+	ModuleCode       pgtype.Text        `json:"module_code"`
+	Credits          pgtype.Numeric     `json:"credits"`
+	IsRemote         bool               `json:"is_remote"`
+	TeamsLink        pgtype.Text        `json:"teams_link"`
+	Notes            pgtype.Text        `json:"notes"`
+	GroupID          pgtype.Text        `json:"group_id"`
+	ClassroomName    pgtype.Text        `json:"classroom_name"`
+	ClassroomAddress pgtype.Text        `json:"classroom_address"`
+	Latitude         pgtype.Numeric     `json:"latitude"`
+	Longitude        pgtype.Numeric     `json:"longitude"`
+}
+
+func (q *Queries) GetPublicCalendarEvents(ctx context.Context, arg GetPublicCalendarEventsParams) ([]GetPublicCalendarEventsRow, error) {
+	rows, err := q.db.Query(ctx, getPublicCalendarEvents, arg.CalendarID, arg.StartDatetime, arg.StartDatetime_2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetPublicCalendarEventsRow{}
+	for rows.Next() {
+		var i GetPublicCalendarEventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SubjectID,
+			&i.Title,
+			&i.StartDatetime,
+			&i.EndDatetime,
+			&i.Professor,
+			&i.ModuleCode,
+			&i.Credits,
+			&i.IsRemote,
+			&i.TeamsLink,
+			&i.Notes,
+			&i.GroupID,
 			&i.ClassroomName,
 			&i.ClassroomAddress,
 			&i.Latitude,
