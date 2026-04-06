@@ -464,10 +464,12 @@ func (s *Service) ClaimCalendar(ctx context.Context, userID, calendarID string) 
 }
 
 type PublicCalendarResponse struct {
+	ID           string               `json:"id"`
 	Name         string               `json:"name"`
 	Slug         string               `json:"slug"`
 	Lang         string               `json:"lang"`
 	Courses      []CourseResponseItem `json:"courses"`
+	Claimed      bool                 `json:"claimed"`
 	Events       []PublicEventItem    `json:"events"`
 	FromDate     time.Time            `json:"from_date"`
 	ToDate       time.Time            `json:"to_date"`
@@ -674,10 +676,12 @@ func (s *Service) GetPublicCalendar(ctx context.Context, slug string) (*PublicCa
 
 	log.Info("public calendar retrieved", "events_count", len(eventItems))
 	return &PublicCalendarResponse{
+		ID:           cal.ID.String(),
 		Name:         cal.Name,
 		Slug:         cal.Slug,
 		Lang:         cal.Lang,
 		Courses:      courseItems,
+		Claimed:      !cal.IsPublic,
 		Events:       eventItems,
 		FromDate:     fromDate,
 		ToDate:       toDate,
