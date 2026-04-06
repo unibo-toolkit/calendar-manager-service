@@ -113,3 +113,19 @@ func (q *Queries) GetEventsForCalendar(ctx context.Context, calendarID pgtype.UU
 	}
 	return items, nil
 }
+
+const getTotalEventsCount = `-- name: GetTotalEventsCount :one
+SELECT COUNT(DISTINCT te.id)::bigint AS total
+FROM timetable_events te
+WHERE te.subject_id IN (
+    SELECT cs.subject_id
+    FROM calendar_subjects cs
+)
+`
+
+func (q *Queries) GetTotalEventsCount(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, getTotalEventsCount)
+	var total int64
+	err := row.Scan(&total)
+	return total, err
+}

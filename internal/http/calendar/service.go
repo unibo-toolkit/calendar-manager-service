@@ -85,6 +85,11 @@ type CalendarListItem struct {
 	CreatedAt      time.Time  `json:"created_at"`
 }
 
+type PublicStats struct {
+	ActiveCalendarsCount int32 `json:"active_calendars_count"`
+	TotalEventsCount     int64 `json:"total_events_count"`
+}
+
 type ScraperClient struct {
 	baseURL    string
 	httpClient *http.Client
@@ -512,6 +517,26 @@ func (s *Service) GetPublicCalendar(ctx context.Context, slug string) (*PublicCa
 		TotalEvents:  totalEvents,
 		TTLExpiresAt: cal.TtlExpiresAt.Time,
 		CreatedAt:    cal.CreatedAt.Time,
+	}, nil
+}
+
+func (s *Service) GetPublicStats(ctx context.Context) (*PublicStats, error) {
+	log := s.log.With("op", "GetPublicStats")
+	log.Info("getting public stats")
+
+	activeCount, err := s.storage.GetActiveCalendarsCount(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get active calendars count: %w", err)
+	}
+
+	totalEvents, err := s.storage.GetTotalEventsCount(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get total events count: %w", err)
+	}
+
+	return &PublicStats{
+		ActiveCalendarsCount: activeCount,
+		TotalEventsCount:     totalEvents,
 	}, nil
 }
 

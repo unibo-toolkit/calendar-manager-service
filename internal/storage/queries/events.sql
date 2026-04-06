@@ -35,3 +35,11 @@ WHERE te.subject_id IN (
     JOIN calendar_courses cc ON cc.id = cs.calendar_course_id
     WHERE cc.calendar_id = $1
 );
+
+-- name: GetTotalEventsCount :one
+SELECT COUNT(DISTINCT te.id)::bigint AS total
+FROM timetable_events te
+WHERE te.subject_id IN (
+    SELECT cs.subject_id
+    FROM calendar_subjects cs
+);
