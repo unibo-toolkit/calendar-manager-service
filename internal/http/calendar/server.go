@@ -22,7 +22,7 @@ type Server struct {
 }
 
 type CreateCalendarRequest struct {
-	Name    string            `json:"name" binding:"required,min=1,max=255"`
+	Name    string            `json:"name" binding:"required,min=1,max=200"`
 	Lang    string            `json:"lang"`
 	Courses []CourseInputItem `json:"courses" binding:"required,min=1,dive"`
 }
@@ -188,6 +188,14 @@ func (s *Server) handleUpdateCalendar(c *gin.Context) {
 		return
 	}
 
+	if req.Name != nil && len(*req.Name) > 200 {
+		c.JSON(400, gin.H{"error": "name must be at most 200 characters"})
+		return
+	}
+	if req.Description != nil && len(*req.Description) > 100 {
+		c.JSON(400, gin.H{"error": "description must be at most 100 characters"})
+		return
+	}
 	if req.Lang != nil && *req.Lang != "it" && *req.Lang != "en" {
 		c.JSON(400, gin.H{"error": ErrInvalidLang.Error()})
 		return
