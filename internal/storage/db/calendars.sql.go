@@ -186,6 +186,17 @@ func (q *Queries) ExtendTTL(ctx context.Context, arg ExtendTTLParams) error {
 	return err
 }
 
+const getActiveCalendarsCount = `-- name: GetActiveCalendarsCount :one
+SELECT COUNT(*)::integer AS total FROM calendar_links WHERE ttl_expires_at > NOW()
+`
+
+func (q *Queries) GetActiveCalendarsCount(ctx context.Context) (int32, error) {
+	row := q.db.QueryRow(ctx, getActiveCalendarsCount)
+	var total int32
+	err := row.Scan(&total)
+	return total, err
+}
+
 const getCalendarByID = `-- name: GetCalendarByID :one
 SELECT id, slug, owner_id, name, description, is_public, access_count, last_accessed_at, ttl_expires_at, created_at, updated_at, lang FROM calendar_links WHERE id = $1
 `

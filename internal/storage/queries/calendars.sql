@@ -92,3 +92,6 @@ SELECT id FROM curricula WHERE id = $1 AND is_active = true;
 
 -- name: CheckSubjectBelongsToCurriculum :one
 SELECT id FROM subjects WHERE id = $1 AND curriculum_id = $2 AND is_active = true;
+
+-- name: GetActiveCalendarsCount :one
+SELECT COUNT(*)::integer AS total FROM calendar_links WHERE ttl_expires_at > NOW();
