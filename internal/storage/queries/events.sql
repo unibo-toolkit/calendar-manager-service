@@ -36,6 +36,43 @@ WHERE te.subject_id IN (
     WHERE cc.calendar_id = $1
 );
 
+-- name: GetUserEventStats :one
+SELECT
+    COUNT(*)::integer AS events_count,
+    COALESCE(SUM(EXTRACT(EPOCH FROM (te.end_datetime - te.start_datetime)) / 3600), 0)::double precision AS total_hours
+FROM timetable_events te
+WHERE te.subject_id IN (
+    SELECT cs.subject_id
+    FROM calendar_subjects cs
+    JOIN calendar_courses cc ON cc.id = cs.calendar_course_id
+    JOIN calendar_links cl ON cl.id = cc.calendar_id
+    WHERE cl.owner_id = $1
+)
+  AND te.start_datetime >= $2
+  AND te.start_datetime < $3;
+
+-- name: GetUserNextEvent :one
+SELECT
+    te.title,
+    te.start_datetime,
+    te.end_datetime
+FROM timetable_events te
+WHERE te.subject_id IN (
+    SELECT cs.subject_id
+    FROM calendar_subjects cs
+    JOIN calendar_courses cc ON cc.id = cs.calendar_course_id
+    JOIN calendar_links cl ON cl.id = cc.calendar_id
+    WHERE cl.owner_id = $1
+)
+  AND te.start_datetime >= $2
+ORDER BY te.start_datetime
+LIMIT 1;
+
+-- name: CountCalendarsByOwner :one
+SELECT COUNT(*)::integer AS total
+FROM calendar_links
+WHERE owner_id = $1;
+
 -- name: GetTotalEventsCount :one
 SELECT COUNT(DISTINCT te.id)::bigint AS total
 FROM timetable_events te

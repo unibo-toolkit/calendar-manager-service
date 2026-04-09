@@ -65,6 +65,7 @@ func (s *Server) registerRoutes() {
 	authed := calendars.Group("")
 	authed.Use(s.requireAuth)
 	authed.GET("", s.handleListCalendars)
+	authed.GET("/me/stats", s.handleGetUserStats)
 	authed.GET("/:id", s.handleGetCalendar)
 	authed.PATCH("/:id", s.handleUpdateCalendar)
 	authed.DELETE("/:id", s.handleDeleteCalendar)
@@ -243,6 +244,18 @@ func (s *Server) handleGetPublicCalendar(c *gin.Context) {
 	slug := c.Param("slug")
 
 	result, err := s.service.GetPublicCalendar(c.Request.Context(), slug)
+	if err != nil {
+		s.handleError(c, err)
+		return
+	}
+
+	c.JSON(200, result)
+}
+
+func (s *Server) handleGetUserStats(c *gin.Context) {
+	userID := c.GetString("user_id")
+
+	result, err := s.service.GetUserStats(c.Request.Context(), userID)
 	if err != nil {
 		s.handleError(c, err)
 		return
