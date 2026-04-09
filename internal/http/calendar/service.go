@@ -90,6 +90,24 @@ type PublicStats struct {
 	TotalEventsCount     int64 `json:"total_events_count"`
 }
 
+type UserStatsResponse struct {
+	CalendarsCount int32          `json:"calendars_count"`
+	ThisWeek       PeriodStats    `json:"this_week"`
+	ThisMonth      PeriodStats    `json:"this_month"`
+	NextEvent      *NextEventInfo `json:"next_event"`
+}
+
+type PeriodStats struct {
+	EventsCount int32   `json:"events_count"`
+	TotalHours  float64 `json:"total_hours"`
+}
+
+type NextEventInfo struct {
+	Title         string    `json:"title"`
+	StartDatetime time.Time `json:"start_datetime"`
+	EndDatetime   time.Time `json:"end_datetime"`
+}
+
 type ScraperClient struct {
 	baseURL    string
 	httpClient *http.Client
@@ -537,6 +555,78 @@ func (s *Service) GetPublicStats(ctx context.Context) (*PublicStats, error) {
 	return &PublicStats{
 		ActiveCalendarsCount: activeCount,
 		TotalEventsCount:     totalEvents,
+	}, nil
+}
+
+func (s *Service) GetUserStats(ctx context.Context, userID string) (*UserStatsResponse, error) {
+	log := s.log.With("op", "GetUserStats", "user_id", userID)
+	log.Info("getting user stats")
+
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, ErrInvalidInput
+	}
+	pgUID := pgtype.UUID{Bytes: uid, Valid: true}
+
+	calendarsCount, err := s.storage.CountCalendarsByOwner(ctx, pgUID)
+	if err != nil {
+		return nil, fmt.Errorf("count calendars: %w", err)
+	}
+
+	now := time.Now()
+
+	weekday := int(now.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	weekStart := time.Date(now.Year(), now.Month(), now.Day()-weekday+1, 0, 0, 0, 0, now.Location())
+	weekEnd := weekStart.AddDate(0, 0, 7)
+
+	weekStats, err := s.storage.GetUserEventStats(ctx, db.GetUserEventStatsParams{
+		OwnerID:         pgUID,
+		StartDatetime:   pgtype.Timestamptz{Time: weekStart, Valid: true},
+		StartDatetime_2: pgtype.Timestamptz{Time: weekEnd, Valid: true},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get week stats: %w", err)
+	}
+
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	monthEnd := monthStart.AddDate(0, 1, 0)
+
+	monthStats, err := s.storage.GetUserEventStats(ctx, db.GetUserEventStatsParams{
+		OwnerID:         pgUID,
+		StartDatetime:   pgtype.Timestamptz{Time: monthStart, Valid: true},
+		StartDatetime_2: pgtype.Timestamptz{Time: monthEnd, Valid: true},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get month stats: %w", err)
+	}
+
+	var nextEvent *NextEventInfo
+	next, err := s.storage.GetUserNextEvent(ctx, db.GetUserNextEventParams{
+		OwnerID:       pgUID,
+		StartDatetime: pgtype.Timestamptz{Time: now, Valid: true},
+	})
+	if err == nil {
+		nextEvent = &NextEventInfo{
+			Title:         next.Title,
+			StartDatetime: next.StartDatetime.Time,
+			EndDatetime:   next.EndDatetime.Time,
+		}
+	}
+
+	return &UserStatsResponse{
+		CalendarsCount: calendarsCount,
+		ThisWeek: PeriodStats{
+			EventsCount: weekStats.EventsCount,
+			TotalHours:  weekStats.TotalHours,
+		},
+		ThisMonth: PeriodStats{
+			EventsCount: monthStats.EventsCount,
+			TotalHours:  monthStats.TotalHours,
+		},
+		NextEvent: nextEvent,
 	}, nil
 }
 

@@ -11,6 +11,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countCalendarsByOwner = `-- name: CountCalendarsByOwner :one
+SELECT COUNT(*)::integer AS total
+FROM calendar_links
+WHERE owner_id = $1
+`
+
+func (q *Queries) CountCalendarsByOwner(ctx context.Context, ownerID pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, countCalendarsByOwner, ownerID)
+	var total int32
+	err := row.Scan(&total)
+	return total, err
+}
+
 const countEventsForCalendar = `-- name: CountEventsForCalendar :one
 SELECT COUNT(*)::integer AS total
 FROM timetable_events te
@@ -128,4 +141,74 @@ func (q *Queries) GetTotalEventsCount(ctx context.Context) (int64, error) {
 	var total int64
 	err := row.Scan(&total)
 	return total, err
+}
+
+const getUserEventStats = `-- name: GetUserEventStats :one
+SELECT
+    COUNT(*)::integer AS events_count,
+    COALESCE(SUM(EXTRACT(EPOCH FROM (te.end_datetime - te.start_datetime)) / 3600), 0)::double precision AS total_hours
+FROM timetable_events te
+WHERE te.subject_id IN (
+    SELECT cs.subject_id
+    FROM calendar_subjects cs
+    JOIN calendar_courses cc ON cc.id = cs.calendar_course_id
+    JOIN calendar_links cl ON cl.id = cc.calendar_id
+    WHERE cl.owner_id = $1
+)
+  AND te.start_datetime >= $2
+  AND te.start_datetime < $3
+`
+
+type GetUserEventStatsParams struct {
+	OwnerID         pgtype.UUID        `json:"owner_id"`
+	StartDatetime   pgtype.Timestamptz `json:"start_datetime"`
+	StartDatetime_2 pgtype.Timestamptz `json:"start_datetime_2"`
+}
+
+type GetUserEventStatsRow struct {
+	EventsCount int32   `json:"events_count"`
+	TotalHours  float64 `json:"total_hours"`
+}
+
+func (q *Queries) GetUserEventStats(ctx context.Context, arg GetUserEventStatsParams) (GetUserEventStatsRow, error) {
+	row := q.db.QueryRow(ctx, getUserEventStats, arg.OwnerID, arg.StartDatetime, arg.StartDatetime_2)
+	var i GetUserEventStatsRow
+	err := row.Scan(&i.EventsCount, &i.TotalHours)
+	return i, err
+}
+
+const getUserNextEvent = `-- name: GetUserNextEvent :one
+SELECT
+    te.title,
+    te.start_datetime,
+    te.end_datetime
+FROM timetable_events te
+WHERE te.subject_id IN (
+    SELECT cs.subject_id
+    FROM calendar_subjects cs
+    JOIN calendar_courses cc ON cc.id = cs.calendar_course_id
+    JOIN calendar_links cl ON cl.id = cc.calendar_id
+    WHERE cl.owner_id = $1
+)
+  AND te.start_datetime >= $2
+ORDER BY te.start_datetime
+LIMIT 1
+`
+
+type GetUserNextEventParams struct {
+	OwnerID       pgtype.UUID        `json:"owner_id"`
+	StartDatetime pgtype.Timestamptz `json:"start_datetime"`
+}
+
+type GetUserNextEventRow struct {
+	Title         string             `json:"title"`
+	StartDatetime pgtype.Timestamptz `json:"start_datetime"`
+	EndDatetime   pgtype.Timestamptz `json:"end_datetime"`
+}
+
+func (q *Queries) GetUserNextEvent(ctx context.Context, arg GetUserNextEventParams) (GetUserNextEventRow, error) {
+	row := q.db.QueryRow(ctx, getUserNextEvent, arg.OwnerID, arg.StartDatetime)
+	var i GetUserNextEventRow
+	err := row.Scan(&i.Title, &i.StartDatetime, &i.EndDatetime)
+	return i, err
 }
