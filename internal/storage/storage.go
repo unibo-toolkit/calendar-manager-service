@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,12 +17,13 @@ type Storage struct {
 	Pool *pgxpool.Pool
 }
 
-func New(cfg *config.DBConfig) *Storage {
+func New(log *slog.Logger, cfg *config.DBConfig) *Storage {
 	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s",
 		cfg.User, cfg.Pass, cfg.Host, cfg.Port, cfg.Name)
 
 	poolCfg, err := pgxpool.ParseConfig(connStr)
 	if err != nil {
+		log.Error("failed to parse db config", "error", err)
 		panic("failed to parse db config: " + err.Error())
 	}
 
@@ -32,12 +34,16 @@ func New(cfg *config.DBConfig) *Storage {
 
 	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
+		log.Error("failed to create db pool", "error", err)
 		panic("failed to connect to db: " + err.Error())
 	}
 
 	if err = pool.Ping(context.Background()); err != nil {
+		log.Error("failed to ping db", "error", err)
 		panic("failed to ping db: " + err.Error())
 	}
+
+	log.Info("db pool initialized", "max_conns", cfg.MaxConns, "min_conns", cfg.MinConns)
 
 	return &Storage{
 		Shutdown: pool.Close,
