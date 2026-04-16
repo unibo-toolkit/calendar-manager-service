@@ -18,8 +18,21 @@ func Run() {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 
-	st := storage.New(&cfg.DB)
-	defer st.Shutdown()
+	log.Info("starting calendar manager",
+		"environment", cfg.HTTP.Environment,
+		"log_level", cfg.HTTP.LogLevel,
+		"port", cfg.HTTP.Port,
+	)
+
+	log.Info("connecting to database", "host", cfg.DB.Host, "port", cfg.DB.Port, "db", cfg.DB.Name)
+	st := storage.New(log, &cfg.DB)
+	log.Info("database connected")
+	defer func() {
+		log.Info("closing database connection")
+		st.Shutdown()
+		log.Info("database connection closed")
+	}()
 
 	httpapp.Start(log, cfg, st)
+	log.Info("calendar-manager-service stopped")
 }

@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/snowflake"
@@ -120,8 +122,15 @@ func NewScraperClient(baseURL string, timeoutSec int) *ScraperClient {
 	}
 }
 
-func (c *ScraperClient) RefreshCurriculum(ctx context.Context, curriculumID string) error {
-	url := fmt.Sprintf("%s/api/v1/timetable/refresh?curriculum_id=%s", c.baseURL, curriculumID)
+func (c *ScraperClient) RefreshTimetable(ctx context.Context, subjectIDs []string) error {
+	if len(subjectIDs) == 0 {
+		return nil
+	}
+	params := make([]string, len(subjectIDs))
+	for i, id := range subjectIDs {
+		params[i] = "subject_ids=" + id
+	}
+	url := fmt.Sprintf("%s/api/v1/timetable/refresh?%s", c.baseURL, strings.Join(params, "&"))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrScraperUnavailable, err)
@@ -132,7 +141,8 @@ func (c *ScraperClient) RefreshCurriculum(ctx context.Context, curriculumID stri
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("%w: status %d", ErrScraperUnavailable, resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%w: status %d, body: %s", ErrScraperUnavailable, resp.StatusCode, string(body))
 	}
 	return nil
 }
@@ -162,6 +172,7 @@ func (s *Service) CreateCalendar(ctx context.Context, userID string, req CreateC
 	if userID != "" {
 		uid, err := uuid.Parse(userID)
 		if err != nil {
+			log.Warn("invalid user id", "error", err)
 			return nil, ErrInvalidInput
 		}
 		ownerID = pgtype.UUID{Bytes: uid, Valid: true}
@@ -172,6 +183,7 @@ func (s *Service) CreateCalendar(ctx context.Context, userID string, req CreateC
 
 	tx, err := s.storage.Pool.Begin(ctx)
 	if err != nil {
+		log.Error("begin tx failed", "error", err)
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
@@ -186,14 +198,17 @@ func (s *Service) CreateCalendar(ctx context.Context, userID string, req CreateC
 		TtlExpiresAt: pgtype.Timestamptz{Time: ttlExpiresAt, Valid: true},
 	})
 	if err != nil {
+		log.Error("create calendar link failed", "error", err)
 		return nil, fmt.Errorf("create calendar link: %w", err)
 	}
 
 	if err := s.validateAndInsertCourses(ctx, qtx, cal.ID, req.Courses); err != nil {
+		log.Warn("validate/insert courses failed", "error", err)
 		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		log.Error("commit tx failed", "error", err)
 		return nil, fmt.Errorf("commit tx: %w", err)
 	}
 
@@ -201,6 +216,7 @@ func (s *Service) CreateCalendar(ctx context.Context, userID string, req CreateC
 
 	resp, err := s.buildCalendarResponse(ctx, cal)
 	if err != nil {
+		log.Error("build response failed", "error", err)
 		return nil, err
 	}
 
@@ -215,12 +231,15 @@ func (s *Service) GetCalendarICS(ctx context.Context, slug, userAgent, ipAddress
 	cal, err := s.storage.GetCalendarBySlug(ctx, slug)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("calendar not found")
 			return nil, ErrCalendarNotFound
 		}
+		log.Error("get calendar by slug failed", "error", err)
 		return nil, fmt.Errorf("get calendar by slug: %w", err)
 	}
 
 	if cal.TtlExpiresAt.Valid && time.Now().After(cal.TtlExpiresAt.Time) {
+		log.Warn("calendar expired", "ttl_expires_at", cal.TtlExpiresAt.Time)
 		return nil, ErrCalendarExpired
 	}
 
@@ -243,6 +262,7 @@ func (s *Service) GetCalendarICS(ctx context.Context, slug, userAgent, ipAddress
 
 	events, err := s.storage.GetEventsForCalendar(ctx, cal.ID)
 	if err != nil {
+		log.Error("get events failed", "error", err)
 		return nil, fmt.Errorf("get events: %w", err)
 	}
 
@@ -270,6 +290,7 @@ func (s *Service) GetCalendarICS(ctx context.Context, slug, userAgent, ipAddress
 
 	data, err := s.ical.Generate(cal.Name, slug, eventData, cal.Lang)
 	if err != nil {
+		log.Error("generate ics failed", "error", err)
 		return nil, fmt.Errorf("generate ics: %w", err)
 	}
 
@@ -283,11 +304,13 @@ func (s *Service) ListCalendars(ctx context.Context, userID string) (*CalendarLi
 
 	uid, err := uuid.Parse(userID)
 	if err != nil {
+		log.Warn("invalid user id", "error", err)
 		return nil, ErrInvalidInput
 	}
 
 	calendars, err := s.storage.ListCalendarsByOwner(ctx, pgtype.UUID{Bytes: uid, Valid: true})
 	if err != nil {
+		log.Error("list calendars failed", "error", err)
 		return nil, fmt.Errorf("list calendars: %w", err)
 	}
 
@@ -315,23 +338,28 @@ func (s *Service) ListCalendars(ctx context.Context, userID string) (*CalendarLi
 }
 
 func (s *Service) GetCalendar(ctx context.Context, userID, calendarID string) (*CalendarResponse, error) {
-	s.log.With("op", "GetCalendar", "calendar_id", calendarID, "user_id", userID).Info("getting calendar")
+	log := s.log.With("op", "GetCalendar", "calendar_id", calendarID, "user_id", userID)
+	log.Info("getting calendar")
 
 	calPgID := uuidToPgtype(calendarID)
 
 	cal, err := s.storage.GetCalendarByID(ctx, calPgID)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("calendar not found")
 			return nil, ErrCalendarNotFound
 		}
+		log.Error("get calendar failed", "error", err)
 		return nil, fmt.Errorf("get calendar: %w", err)
 	}
 
 	uid, err := uuid.Parse(userID)
 	if err != nil {
+		log.Warn("invalid user id", "error", err)
 		return nil, ErrInvalidInput
 	}
 	if !cal.OwnerID.Valid || cal.OwnerID.Bytes != uid {
+		log.Warn("not calendar owner")
 		return nil, ErrNotOwner
 	}
 
@@ -347,16 +375,20 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 	cal, err := s.storage.GetCalendarByID(ctx, calPgID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("calendar not found")
 			return nil, ErrCalendarNotFound
 		}
+		log.Error("get calendar failed", "error", err)
 		return nil, fmt.Errorf("get calendar: %w", err)
 	}
 
 	uid, err := uuid.Parse(userID)
 	if err != nil {
+		log.Warn("invalid user id", "error", err)
 		return nil, ErrInvalidInput
 	}
 	if !cal.OwnerID.Valid || cal.OwnerID.Bytes != uid {
+		log.Warn("not calendar owner")
 		return nil, ErrNotOwner
 	}
 
@@ -380,12 +412,14 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 		Lang:        lang,
 	})
 	if err != nil {
+		log.Error("update calendar fields failed", "error", err)
 		return nil, fmt.Errorf("update calendar fields: %w", err)
 	}
 
 	if req.Courses != nil {
 		tx, err := s.storage.Pool.Begin(ctx)
 		if err != nil {
+			log.Error("begin tx failed", "error", err)
 			return nil, fmt.Errorf("begin tx: %w", err)
 		}
 		defer tx.Rollback(ctx)
@@ -393,14 +427,17 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 		qtx := s.storage.Queries.WithTx(tx)
 
 		if err := qtx.DeleteCalendarCoursesByCalendar(ctx, calPgID); err != nil {
+			log.Error("delete courses failed", "error", err)
 			return nil, fmt.Errorf("delete courses: %w", err)
 		}
 
 		if err := s.validateAndInsertCourses(ctx, qtx, calPgID, req.Courses); err != nil {
+			log.Warn("validate/insert courses failed", "error", err)
 			return nil, err
 		}
 
 		if err := tx.Commit(ctx); err != nil {
+			log.Error("commit tx failed", "error", err)
 			return nil, fmt.Errorf("commit tx: %w", err)
 		}
 
@@ -409,6 +446,7 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 
 	cal, err = s.storage.GetCalendarByID(ctx, calPgID)
 	if err != nil {
+		log.Error("get updated calendar failed", "error", err)
 		return nil, fmt.Errorf("get updated calendar: %w", err)
 	}
 
@@ -425,20 +463,25 @@ func (s *Service) DeleteCalendar(ctx context.Context, userID, calendarID string)
 	cal, err := s.storage.GetCalendarByID(ctx, calPgID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("calendar not found")
 			return ErrCalendarNotFound
 		}
+		log.Error("get calendar failed", "error", err)
 		return fmt.Errorf("get calendar: %w", err)
 	}
 
 	uid, err := uuid.Parse(userID)
 	if err != nil {
+		log.Warn("invalid user id", "error", err)
 		return ErrInvalidInput
 	}
 	if !cal.OwnerID.Valid || cal.OwnerID.Bytes != uid {
+		log.Warn("not calendar owner")
 		return ErrNotOwner
 	}
 
 	if err := s.storage.DeleteCalendar(ctx, calPgID); err != nil {
+		log.Error("delete calendar failed", "error", err)
 		return fmt.Errorf("delete calendar: %w", err)
 	}
 
@@ -455,17 +498,21 @@ func (s *Service) ClaimCalendar(ctx context.Context, userID, calendarID string) 
 	cal, err := s.storage.GetCalendarByID(ctx, calPgID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("calendar not found")
 			return nil, ErrCalendarNotFound
 		}
+		log.Error("get calendar failed", "error", err)
 		return nil, fmt.Errorf("get calendar: %w", err)
 	}
 
 	if cal.OwnerID.Valid {
+		log.Warn("calendar already claimed")
 		return nil, ErrAlreadyClaimed
 	}
 
 	uid, err := uuid.Parse(userID)
 	if err != nil {
+		log.Warn("invalid user id", "error", err)
 		return nil, ErrInvalidInput
 	}
 
@@ -477,8 +524,10 @@ func (s *Service) ClaimCalendar(ctx context.Context, userID, calendarID string) 
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("claim race: calendar already claimed")
 			return nil, ErrAlreadyClaimed
 		}
+		log.Error("claim calendar failed", "error", err)
 		return nil, fmt.Errorf("claim calendar: %w", err)
 	}
 
@@ -505,22 +554,27 @@ func (s *Service) GetPublicCalendar(ctx context.Context, slug string) (*PublicCa
 	cal, err := s.storage.GetCalendarBySlug(ctx, slug)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("calendar not found")
 			return nil, ErrCalendarNotFound
 		}
+		log.Error("get calendar by slug failed", "error", err)
 		return nil, fmt.Errorf("get calendar by slug: %w", err)
 	}
 
 	if cal.TtlExpiresAt.Valid && time.Now().After(cal.TtlExpiresAt.Time) {
+		log.Warn("calendar expired", "ttl_expires_at", cal.TtlExpiresAt.Time)
 		return nil, ErrCalendarExpired
 	}
 
 	totalEvents, err := s.storage.CountEventsForCalendar(ctx, cal.ID)
 	if err != nil {
+		log.Error("count events failed", "error", err)
 		return nil, fmt.Errorf("count events: %w", err)
 	}
 
 	resp, err := s.buildCalendarResponse(ctx, cal)
 	if err != nil {
+		log.Error("build response failed", "error", err)
 		return nil, err
 	}
 
@@ -544,14 +598,17 @@ func (s *Service) GetPublicStats(ctx context.Context) (*PublicStats, error) {
 
 	activeCount, err := s.storage.GetActiveCalendarsCount(ctx)
 	if err != nil {
+		log.Error("get active calendars count failed", "error", err)
 		return nil, fmt.Errorf("get active calendars count: %w", err)
 	}
 
 	totalEvents, err := s.storage.GetTotalEventsCount(ctx)
 	if err != nil {
+		log.Error("get total events count failed", "error", err)
 		return nil, fmt.Errorf("get total events count: %w", err)
 	}
 
+	log.Info("public stats retrieved", "active_calendars", activeCount, "total_events", totalEvents)
 	return &PublicStats{
 		ActiveCalendarsCount: activeCount,
 		TotalEventsCount:     totalEvents,
@@ -564,12 +621,14 @@ func (s *Service) GetUserStats(ctx context.Context, userID string) (*UserStatsRe
 
 	uid, err := uuid.Parse(userID)
 	if err != nil {
+		log.Warn("invalid user id", "error", err)
 		return nil, ErrInvalidInput
 	}
 	pgUID := pgtype.UUID{Bytes: uid, Valid: true}
 
 	calendarsCount, err := s.storage.CountCalendarsByOwner(ctx, pgUID)
 	if err != nil {
+		log.Error("count calendars failed", "error", err)
 		return nil, fmt.Errorf("count calendars: %w", err)
 	}
 
@@ -588,6 +647,7 @@ func (s *Service) GetUserStats(ctx context.Context, userID string) (*UserStatsRe
 		StartDatetime_2: pgtype.Timestamptz{Time: weekEnd, Valid: true},
 	})
 	if err != nil {
+		log.Error("get week stats failed", "error", err)
 		return nil, fmt.Errorf("get week stats: %w", err)
 	}
 
@@ -600,6 +660,7 @@ func (s *Service) GetUserStats(ctx context.Context, userID string) (*UserStatsRe
 		StartDatetime_2: pgtype.Timestamptz{Time: monthEnd, Valid: true},
 	})
 	if err != nil {
+		log.Error("get month stats failed", "error", err)
 		return nil, fmt.Errorf("get month stats: %w", err)
 	}
 
@@ -614,7 +675,11 @@ func (s *Service) GetUserStats(ctx context.Context, userID string) (*UserStatsRe
 			StartDatetime: next.StartDatetime.Time,
 			EndDatetime:   next.EndDatetime.Time,
 		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		log.Warn("get next event failed", "error", err)
 	}
+
+	log.Info("user stats retrieved", "calendars", calendarsCount, "week_events", weekStats.EventsCount, "month_events", monthStats.EventsCount)
 
 	return &UserStatsResponse{
 		CalendarsCount: calendarsCount,
@@ -668,14 +733,19 @@ func (s *Service) validateAndInsertCourses(ctx context.Context, qtx *db.Queries,
 }
 
 func (s *Service) refreshCurricula(ctx context.Context, log *slog.Logger, courses []CourseInputItem) {
-	uniqueCurriculums := make(map[string]bool)
+	seen := make(map[string]bool)
+	var subjectIDs []string
 	for _, course := range courses {
-		uniqueCurriculums[course.CurriculumID] = true
-	}
-	for currID := range uniqueCurriculums {
-		if err := s.scraper.RefreshCurriculum(ctx, currID); err != nil {
-			log.Warn("scraper refresh failed", "curriculum_id", currID, "error", err)
+		for _, subID := range course.SubjectIDs {
+			if seen[subID] {
+				continue
+			}
+			seen[subID] = true
+			subjectIDs = append(subjectIDs, subID)
 		}
+	}
+	if err := s.scraper.RefreshTimetable(ctx, subjectIDs); err != nil {
+		log.Warn("scraper refresh failed", "subject_ids_count", len(subjectIDs), "error", err)
 	}
 }
 
