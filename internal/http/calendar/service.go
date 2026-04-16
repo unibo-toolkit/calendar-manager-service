@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/snowflake"
@@ -120,8 +122,15 @@ func NewScraperClient(baseURL string, timeoutSec int) *ScraperClient {
 	}
 }
 
-func (c *ScraperClient) RefreshCurriculum(ctx context.Context, curriculumID string) error {
-	url := fmt.Sprintf("%s/api/v1/timetable/refresh?curriculum_id=%s", c.baseURL, curriculumID)
+func (c *ScraperClient) RefreshTimetable(ctx context.Context, subjectIDs []string) error {
+	if len(subjectIDs) == 0 {
+		return nil
+	}
+	params := make([]string, len(subjectIDs))
+	for i, id := range subjectIDs {
+		params[i] = "subject_ids=" + id
+	}
+	url := fmt.Sprintf("%s/api/v1/timetable/refresh?%s", c.baseURL, strings.Join(params, "&"))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrScraperUnavailable, err)
@@ -132,7 +141,8 @@ func (c *ScraperClient) RefreshCurriculum(ctx context.Context, curriculumID stri
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("%w: status %d", ErrScraperUnavailable, resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%w: status %d, body: %s", ErrScraperUnavailable, resp.StatusCode, string(body))
 	}
 	return nil
 }
@@ -668,14 +678,19 @@ func (s *Service) validateAndInsertCourses(ctx context.Context, qtx *db.Queries,
 }
 
 func (s *Service) refreshCurricula(ctx context.Context, log *slog.Logger, courses []CourseInputItem) {
-	uniqueCurriculums := make(map[string]bool)
+	seen := make(map[string]bool)
+	var subjectIDs []string
 	for _, course := range courses {
-		uniqueCurriculums[course.CurriculumID] = true
-	}
-	for currID := range uniqueCurriculums {
-		if err := s.scraper.RefreshCurriculum(ctx, currID); err != nil {
-			log.Warn("scraper refresh failed", "curriculum_id", currID, "error", err)
+		for _, subID := range course.SubjectIDs {
+			if seen[subID] {
+				continue
+			}
+			seen[subID] = true
+			subjectIDs = append(subjectIDs, subID)
 		}
+	}
+	if err := s.scraper.RefreshTimetable(ctx, subjectIDs); err != nil {
+		log.Warn("scraper refresh failed", "subject_ids_count", len(subjectIDs), "error", err)
 	}
 }
 
