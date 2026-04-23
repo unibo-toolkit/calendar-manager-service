@@ -24,7 +24,7 @@ type Server struct {
 type CreateCalendarRequest struct {
 	Name              string            `json:"name" binding:"required,min=1,max=200"`
 	Lang              string            `json:"lang"`
-	FormatEventTitles bool              `json:"format_event_titles"`
+	FormatEventTitles *bool             `json:"format_event_titles"`
 	Courses           []CourseInputItem `json:"courses" binding:"required,min=1,dive"`
 }
 

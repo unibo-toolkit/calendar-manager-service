@@ -197,7 +197,7 @@ func (s *Service) CreateCalendar(ctx context.Context, userID string, req CreateC
 		Name:              req.Name,
 		Lang:              req.Lang,
 		TtlExpiresAt:      pgtype.Timestamptz{Time: ttlExpiresAt, Valid: true},
-		FormatEventTitles: req.FormatEventTitles,
+		FormatEventTitles: req.FormatEventTitles == nil || *req.FormatEventTitles,
 	})
 	if err != nil {
 		log.Error("create calendar link failed", "error", err)
