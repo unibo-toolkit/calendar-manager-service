@@ -31,16 +31,17 @@ type Service struct {
 }
 
 type CalendarResponse struct {
-	ID           string               `json:"id"`
-	Slug         string               `json:"slug"`
-	Name         string               `json:"name"`
-	Description  *string              `json:"description"`
-	Lang         string               `json:"lang"`
-	IcsURL       string               `json:"ics_url"`
-	TTLExpiresAt time.Time            `json:"ttl_expires_at"`
-	OwnerID      *string              `json:"owner_id"`
-	Courses      []CourseResponseItem `json:"courses"`
-	CreatedAt    time.Time            `json:"created_at"`
+	ID                string               `json:"id"`
+	Slug              string               `json:"slug"`
+	Name              string               `json:"name"`
+	Description       *string              `json:"description"`
+	Lang              string               `json:"lang"`
+	FormatEventTitles bool                 `json:"format_event_titles"`
+	IcsURL            string               `json:"ics_url"`
+	TTLExpiresAt      time.Time            `json:"ttl_expires_at"`
+	OwnerID           *string              `json:"owner_id"`
+	Courses           []CourseResponseItem `json:"courses"`
+	CreatedAt         time.Time            `json:"created_at"`
 }
 
 type CourseResponseItem struct {
@@ -191,11 +192,12 @@ func (s *Service) CreateCalendar(ctx context.Context, userID string, req CreateC
 	qtx := s.storage.Queries.WithTx(tx)
 
 	cal, err := qtx.CreateCalendarLink(ctx, db.CreateCalendarLinkParams{
-		Slug:         slug,
-		OwnerID:      ownerID,
-		Name:         req.Name,
-		Lang:         req.Lang,
-		TtlExpiresAt: pgtype.Timestamptz{Time: ttlExpiresAt, Valid: true},
+		Slug:              slug,
+		OwnerID:           ownerID,
+		Name:              req.Name,
+		Lang:              req.Lang,
+		TtlExpiresAt:      pgtype.Timestamptz{Time: ttlExpiresAt, Valid: true},
+		FormatEventTitles: req.FormatEventTitles,
 	})
 	if err != nil {
 		log.Error("create calendar link failed", "error", err)
@@ -268,9 +270,13 @@ func (s *Service) GetCalendarICS(ctx context.Context, slug, userAgent, ipAddress
 
 	eventData := make([]ical.EventData, len(events))
 	for i, e := range events {
+		title := e.Title
+		if cal.FormatEventTitles {
+			title = ical.FormatEventTitle(title)
+		}
 		eventData[i] = ical.EventData{
 			TimetableEventID: pgtypeUUIDToString(e.TimetableEventID),
-			Title:            e.Title,
+			Title:            title,
 			StartDatetime:    e.StartDatetime.Time,
 			EndDatetime:      e.EndDatetime.Time,
 			Professor:        pgtypeTextToPtr(e.Professor),
@@ -404,12 +410,17 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 	if req.Lang != nil {
 		lang = pgtype.Text{String: *req.Lang, Valid: true}
 	}
+	var formatTitles pgtype.Bool
+	if req.FormatEventTitles != nil {
+		formatTitles = pgtype.Bool{Bool: *req.FormatEventTitles, Valid: true}
+	}
 
 	cal, err = s.storage.UpdateCalendarFields(ctx, db.UpdateCalendarFieldsParams{
-		ID:          calPgID,
-		Name:        name,
-		Description: desc,
-		Lang:        lang,
+		ID:                calPgID,
+		Name:              name,
+		Description:       desc,
+		Lang:              lang,
+		FormatEventTitles: formatTitles,
 	})
 	if err != nil {
 		log.Error("update calendar fields failed", "error", err)
@@ -803,9 +814,13 @@ func (s *Service) buildCalendarResponse(ctx context.Context, cal db.CalendarLink
 		if sub.Professor.Valid {
 			professor = &sub.Professor.String
 		}
+		title := sub.Title
+		if cal.FormatEventTitles {
+			title = ical.FormatEventTitle(title)
+		}
 		subjectsByCC[key] = append(subjectsByCC[key], SubjectResponse{
 			ID:         pgtypeUUIDToString(sub.SubjectID),
-			Title:      sub.Title,
+			Title:      title,
 			ModuleCode: moduleCode,
 			Credits:    credits,
 			Professor:  professor,
@@ -851,16 +866,17 @@ func (s *Service) buildCalendarResponse(ctx context.Context, cal db.CalendarLink
 	}
 
 	return &CalendarResponse{
-		ID:           pgtypeUUIDToString(cal.ID),
-		Slug:         cal.Slug,
-		Name:         cal.Name,
-		Description:  description,
-		Lang:         cal.Lang,
-		IcsURL:       s.buildIcsURL(cal.Slug),
-		TTLExpiresAt: cal.TtlExpiresAt.Time,
-		OwnerID:      ownerIDStr,
-		Courses:      courseItems,
-		CreatedAt:    cal.CreatedAt.Time,
+		ID:                pgtypeUUIDToString(cal.ID),
+		Slug:              cal.Slug,
+		Name:              cal.Name,
+		Description:       description,
+		Lang:              cal.Lang,
+		FormatEventTitles: cal.FormatEventTitles,
+		IcsURL:            s.buildIcsURL(cal.Slug),
+		TTLExpiresAt:      cal.TtlExpiresAt.Time,
+		OwnerID:           ownerIDStr,
+		Courses:           courseItems,
+		CreatedAt:         cal.CreatedAt.Time,
 	}, nil
 }
 

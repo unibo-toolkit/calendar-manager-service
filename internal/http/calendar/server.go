@@ -22,9 +22,10 @@ type Server struct {
 }
 
 type CreateCalendarRequest struct {
-	Name    string            `json:"name" binding:"required,min=1,max=200"`
-	Lang    string            `json:"lang"`
-	Courses []CourseInputItem `json:"courses" binding:"required,min=1,dive"`
+	Name              string            `json:"name" binding:"required,min=1,max=200"`
+	Lang              string            `json:"lang"`
+	FormatEventTitles bool              `json:"format_event_titles"`
+	Courses           []CourseInputItem `json:"courses" binding:"required,min=1,dive"`
 }
 
 type CourseInputItem struct {
@@ -33,10 +34,11 @@ type CourseInputItem struct {
 }
 
 type UpdateCalendarRequest struct {
-	Name        *string           `json:"name,omitempty"`
-	Description *string           `json:"description,omitempty"`
-	Lang        *string           `json:"lang,omitempty"`
-	Courses     []CourseInputItem `json:"courses,omitempty"`
+	Name              *string           `json:"name,omitempty"`
+	Description       *string           `json:"description,omitempty"`
+	Lang              *string           `json:"lang,omitempty"`
+	FormatEventTitles *bool             `json:"format_event_titles,omitempty"`
+	Courses           []CourseInputItem `json:"courses,omitempty"`
 }
 
 func New(log *slog.Logger, cfg *config.Config, st *storage.Storage) *Server {
