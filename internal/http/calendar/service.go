@@ -547,15 +547,16 @@ func (s *Service) ClaimCalendar(ctx context.Context, userID, calendarID string) 
 }
 
 type PublicCalendarResponse struct {
-	ID           string               `json:"id"`
-	Name         string               `json:"name"`
-	Slug         string               `json:"slug"`
-	Lang         string               `json:"lang"`
-	Courses      []CourseResponseItem `json:"courses"`
-	Claimed      bool                 `json:"claimed"`
-	TotalEvents  int32                `json:"total_events"`
-	TTLExpiresAt time.Time            `json:"ttl_expires_at"`
-	CreatedAt    time.Time            `json:"created_at"`
+	ID                string               `json:"id"`
+	Name              string               `json:"name"`
+	Slug              string               `json:"slug"`
+	Lang              string               `json:"lang"`
+	FormatEventTitles bool                 `json:"format_event_titles"`
+	Courses           []CourseResponseItem `json:"courses"`
+	Claimed           bool                 `json:"claimed"`
+	TotalEvents       int32                `json:"total_events"`
+	TTLExpiresAt      time.Time            `json:"ttl_expires_at"`
+	CreatedAt         time.Time            `json:"created_at"`
 }
 
 func (s *Service) GetPublicCalendar(ctx context.Context, slug string) (*PublicCalendarResponse, error) {
@@ -591,15 +592,16 @@ func (s *Service) GetPublicCalendar(ctx context.Context, slug string) (*PublicCa
 
 	log.Info("public calendar retrieved", "total_events", totalEvents)
 	return &PublicCalendarResponse{
-		ID:           resp.ID,
-		Name:         resp.Name,
-		Slug:         resp.Slug,
-		Lang:         resp.Lang,
-		Courses:      resp.Courses,
-		Claimed:      cal.OwnerID.Valid && cal.OwnerID.Bytes != uuid.Nil,
-		TotalEvents:  totalEvents,
-		TTLExpiresAt: cal.TtlExpiresAt.Time,
-		CreatedAt:    cal.CreatedAt.Time,
+		ID:                resp.ID,
+		Name:              resp.Name,
+		Slug:              resp.Slug,
+		Lang:              resp.Lang,
+		FormatEventTitles: resp.FormatEventTitles,
+		Courses:           resp.Courses,
+		Claimed:           cal.OwnerID.Valid && cal.OwnerID.Bytes != uuid.Nil,
+		TotalEvents:       totalEvents,
+		TTLExpiresAt:      cal.TtlExpiresAt.Time,
+		CreatedAt:         cal.CreatedAt.Time,
 	}, nil
 }
 
