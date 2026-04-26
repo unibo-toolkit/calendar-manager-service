@@ -1,6 +1,6 @@
 -- name: CreateCalendarLink :one
-INSERT INTO calendar_links (slug, owner_id, name, description, lang, ttl_expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO calendar_links (slug, owner_id, name, description, lang, ttl_expires_at, format_event_titles)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: GetCalendarByID :one
@@ -22,6 +22,7 @@ UPDATE calendar_links
 SET name = COALESCE(NULLIF(sqlc.narg('name')::text, ''), name),
     description = COALESCE(sqlc.narg('description')::text, description),
     lang = COALESCE(NULLIF(sqlc.narg('lang')::text, ''), lang),
+    format_event_titles = COALESCE(sqlc.narg('format_event_titles')::boolean, format_event_titles),
     updated_at = NOW()
 WHERE id = @id
 RETURNING *;

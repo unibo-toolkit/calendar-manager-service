@@ -41,7 +41,7 @@ const claimCalendar = `-- name: ClaimCalendar :one
 UPDATE calendar_links
 SET owner_id = $2, ttl_expires_at = $3, updated_at = NOW()
 WHERE id = $1 AND owner_id IS NULL
-RETURNING id, slug, owner_id, name, description, is_public, access_count, last_accessed_at, ttl_expires_at, created_at, updated_at, lang
+RETURNING id, slug, owner_id, name, description, is_public, access_count, last_accessed_at, ttl_expires_at, created_at, updated_at, lang, format_event_titles
 `
 
 type ClaimCalendarParams struct {
@@ -66,6 +66,7 @@ func (q *Queries) ClaimCalendar(ctx context.Context, arg ClaimCalendarParams) (C
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Lang,
+		&i.FormatEventTitles,
 	)
 	return i, err
 }
@@ -96,18 +97,19 @@ func (q *Queries) CreateCalendarCourse(ctx context.Context, arg CreateCalendarCo
 }
 
 const createCalendarLink = `-- name: CreateCalendarLink :one
-INSERT INTO calendar_links (slug, owner_id, name, description, lang, ttl_expires_at)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, slug, owner_id, name, description, is_public, access_count, last_accessed_at, ttl_expires_at, created_at, updated_at, lang
+INSERT INTO calendar_links (slug, owner_id, name, description, lang, ttl_expires_at, format_event_titles)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, slug, owner_id, name, description, is_public, access_count, last_accessed_at, ttl_expires_at, created_at, updated_at, lang, format_event_titles
 `
 
 type CreateCalendarLinkParams struct {
-	Slug         string             `json:"slug"`
-	OwnerID      pgtype.UUID        `json:"owner_id"`
-	Name         string             `json:"name"`
-	Description  pgtype.Text        `json:"description"`
-	Lang         string             `json:"lang"`
-	TtlExpiresAt pgtype.Timestamptz `json:"ttl_expires_at"`
+	Slug              string             `json:"slug"`
+	OwnerID           pgtype.UUID        `json:"owner_id"`
+	Name              string             `json:"name"`
+	Description       pgtype.Text        `json:"description"`
+	Lang              string             `json:"lang"`
+	TtlExpiresAt      pgtype.Timestamptz `json:"ttl_expires_at"`
+	FormatEventTitles bool               `json:"format_event_titles"`
 }
 
 func (q *Queries) CreateCalendarLink(ctx context.Context, arg CreateCalendarLinkParams) (CalendarLink, error) {
@@ -118,6 +120,7 @@ func (q *Queries) CreateCalendarLink(ctx context.Context, arg CreateCalendarLink
 		arg.Description,
 		arg.Lang,
 		arg.TtlExpiresAt,
+		arg.FormatEventTitles,
 	)
 	var i CalendarLink
 	err := row.Scan(
@@ -133,6 +136,7 @@ func (q *Queries) CreateCalendarLink(ctx context.Context, arg CreateCalendarLink
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Lang,
+		&i.FormatEventTitles,
 	)
 	return i, err
 }
@@ -198,7 +202,7 @@ func (q *Queries) GetActiveCalendarsCount(ctx context.Context) (int32, error) {
 }
 
 const getCalendarByID = `-- name: GetCalendarByID :one
-SELECT id, slug, owner_id, name, description, is_public, access_count, last_accessed_at, ttl_expires_at, created_at, updated_at, lang FROM calendar_links WHERE id = $1
+SELECT id, slug, owner_id, name, description, is_public, access_count, last_accessed_at, ttl_expires_at, created_at, updated_at, lang, format_event_titles FROM calendar_links WHERE id = $1
 `
 
 func (q *Queries) GetCalendarByID(ctx context.Context, id pgtype.UUID) (CalendarLink, error) {
@@ -217,12 +221,13 @@ func (q *Queries) GetCalendarByID(ctx context.Context, id pgtype.UUID) (Calendar
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Lang,
+		&i.FormatEventTitles,
 	)
 	return i, err
 }
 
 const getCalendarBySlug = `-- name: GetCalendarBySlug :one
-SELECT id, slug, owner_id, name, description, is_public, access_count, last_accessed_at, ttl_expires_at, created_at, updated_at, lang FROM calendar_links WHERE slug = $1
+SELECT id, slug, owner_id, name, description, is_public, access_count, last_accessed_at, ttl_expires_at, created_at, updated_at, lang, format_event_titles FROM calendar_links WHERE slug = $1
 `
 
 func (q *Queries) GetCalendarBySlug(ctx context.Context, slug string) (CalendarLink, error) {
@@ -241,6 +246,7 @@ func (q *Queries) GetCalendarBySlug(ctx context.Context, slug string) (CalendarL
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Lang,
+		&i.FormatEventTitles,
 	)
 	return i, err
 }
@@ -368,7 +374,7 @@ func (q *Queries) IncrementAccess(ctx context.Context, id pgtype.UUID) error {
 
 const listCalendarsByOwner = `-- name: ListCalendarsByOwner :many
 SELECT
-    cl.id, cl.slug, cl.owner_id, cl.name, cl.description, cl.is_public, cl.access_count, cl.last_accessed_at, cl.ttl_expires_at, cl.created_at, cl.updated_at, cl.lang,
+    cl.id, cl.slug, cl.owner_id, cl.name, cl.description, cl.is_public, cl.access_count, cl.last_accessed_at, cl.ttl_expires_at, cl.created_at, cl.updated_at, cl.lang, cl.format_event_titles,
     (SELECT COUNT(*) FROM calendar_courses WHERE calendar_id = cl.id) AS courses_count
 FROM calendar_links cl
 WHERE cl.owner_id = $1
@@ -376,19 +382,20 @@ ORDER BY cl.created_at DESC
 `
 
 type ListCalendarsByOwnerRow struct {
-	ID             pgtype.UUID        `json:"id"`
-	Slug           string             `json:"slug"`
-	OwnerID        pgtype.UUID        `json:"owner_id"`
-	Name           string             `json:"name"`
-	Description    pgtype.Text        `json:"description"`
-	IsPublic       bool               `json:"is_public"`
-	AccessCount    int32              `json:"access_count"`
-	LastAccessedAt pgtype.Timestamptz `json:"last_accessed_at"`
-	TtlExpiresAt   pgtype.Timestamptz `json:"ttl_expires_at"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
-	Lang           string             `json:"lang"`
-	CoursesCount   int64              `json:"courses_count"`
+	ID                pgtype.UUID        `json:"id"`
+	Slug              string             `json:"slug"`
+	OwnerID           pgtype.UUID        `json:"owner_id"`
+	Name              string             `json:"name"`
+	Description       pgtype.Text        `json:"description"`
+	IsPublic          bool               `json:"is_public"`
+	AccessCount       int32              `json:"access_count"`
+	LastAccessedAt    pgtype.Timestamptz `json:"last_accessed_at"`
+	TtlExpiresAt      pgtype.Timestamptz `json:"ttl_expires_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	Lang              string             `json:"lang"`
+	FormatEventTitles bool               `json:"format_event_titles"`
+	CoursesCount      int64              `json:"courses_count"`
 }
 
 func (q *Queries) ListCalendarsByOwner(ctx context.Context, ownerID pgtype.UUID) ([]ListCalendarsByOwnerRow, error) {
@@ -413,6 +420,7 @@ func (q *Queries) ListCalendarsByOwner(ctx context.Context, ownerID pgtype.UUID)
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Lang,
+			&i.FormatEventTitles,
 			&i.CoursesCount,
 		); err != nil {
 			return nil, err
@@ -430,16 +438,18 @@ UPDATE calendar_links
 SET name = COALESCE(NULLIF($1::text, ''), name),
     description = COALESCE($2::text, description),
     lang = COALESCE(NULLIF($3::text, ''), lang),
+    format_event_titles = COALESCE($4::boolean, format_event_titles),
     updated_at = NOW()
-WHERE id = $4
-RETURNING id, slug, owner_id, name, description, is_public, access_count, last_accessed_at, ttl_expires_at, created_at, updated_at, lang
+WHERE id = $5
+RETURNING id, slug, owner_id, name, description, is_public, access_count, last_accessed_at, ttl_expires_at, created_at, updated_at, lang, format_event_titles
 `
 
 type UpdateCalendarFieldsParams struct {
-	Name        pgtype.Text `json:"name"`
-	Description pgtype.Text `json:"description"`
-	Lang        pgtype.Text `json:"lang"`
-	ID          pgtype.UUID `json:"id"`
+	Name              pgtype.Text `json:"name"`
+	Description       pgtype.Text `json:"description"`
+	Lang              pgtype.Text `json:"lang"`
+	FormatEventTitles pgtype.Bool `json:"format_event_titles"`
+	ID                pgtype.UUID `json:"id"`
 }
 
 func (q *Queries) UpdateCalendarFields(ctx context.Context, arg UpdateCalendarFieldsParams) (CalendarLink, error) {
@@ -447,6 +457,7 @@ func (q *Queries) UpdateCalendarFields(ctx context.Context, arg UpdateCalendarFi
 		arg.Name,
 		arg.Description,
 		arg.Lang,
+		arg.FormatEventTitles,
 		arg.ID,
 	)
 	var i CalendarLink
@@ -463,6 +474,7 @@ func (q *Queries) UpdateCalendarFields(ctx context.Context, arg UpdateCalendarFi
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Lang,
+		&i.FormatEventTitles,
 	)
 	return i, err
 }

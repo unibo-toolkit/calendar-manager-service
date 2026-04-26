@@ -64,18 +64,19 @@ type CalendarCourse struct {
 }
 
 type CalendarLink struct {
-	ID             pgtype.UUID        `json:"id"`
-	Slug           string             `json:"slug"`
-	OwnerID        pgtype.UUID        `json:"owner_id"`
-	Name           string             `json:"name"`
-	Description    pgtype.Text        `json:"description"`
-	IsPublic       bool               `json:"is_public"`
-	AccessCount    int32              `json:"access_count"`
-	LastAccessedAt pgtype.Timestamptz `json:"last_accessed_at"`
-	TtlExpiresAt   pgtype.Timestamptz `json:"ttl_expires_at"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
-	Lang           string             `json:"lang"`
+	ID                pgtype.UUID        `json:"id"`
+	Slug              string             `json:"slug"`
+	OwnerID           pgtype.UUID        `json:"owner_id"`
+	Name              string             `json:"name"`
+	Description       pgtype.Text        `json:"description"`
+	IsPublic          bool               `json:"is_public"`
+	AccessCount       int32              `json:"access_count"`
+	LastAccessedAt    pgtype.Timestamptz `json:"last_accessed_at"`
+	TtlExpiresAt      pgtype.Timestamptz `json:"ttl_expires_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	Lang              string             `json:"lang"`
+	FormatEventTitles bool               `json:"format_event_titles"`
 }
 
 type CalendarSubject struct {
