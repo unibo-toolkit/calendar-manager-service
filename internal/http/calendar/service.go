@@ -766,20 +766,17 @@ func (s *Service) refreshTTL(ctx context.Context, cal *db.CalendarLink) {
 	if !cal.TtlExpiresAt.Valid {
 		return
 	}
-	window := time.Duration(s.cfg.TTL.RefreshWindowDays) * 24 * time.Hour
-	if time.Until(cal.TtlExpiresAt.Time) < window {
-		var days int
-		if cal.OwnerID.Valid {
-			days = s.cfg.TTL.AuthenticatedDays
-		} else {
-			days = s.cfg.TTL.AnonymousDays
-		}
-		extension := time.Duration(days) * 24 * time.Hour
-		_ = s.storage.ExtendTTL(ctx, db.ExtendTTLParams{
-			ID:           cal.ID,
-			TtlExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(extension), Valid: true},
-		})
+	var days int
+	if cal.OwnerID.Valid {
+		days = s.cfg.TTL.AuthenticatedDays
+	} else {
+		days = s.cfg.TTL.AnonymousDays
 	}
+	extension := time.Duration(days) * 24 * time.Hour
+	_ = s.storage.ExtendTTL(ctx, db.ExtendTTLParams{
+		ID:           cal.ID,
+		TtlExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(extension), Valid: true},
+	})
 }
 
 func (s *Service) buildCalendarResponse(ctx context.Context, cal db.CalendarLink) (*CalendarResponse, error) {

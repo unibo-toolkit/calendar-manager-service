@@ -45,7 +45,6 @@ type CalendarConfig struct {
 type TTLConfig struct {
 	AnonymousDays     int `env:"TTL_ANONYMOUS_DAYS" env-default:"30"`
 	AuthenticatedDays int `env:"TTL_AUTHENTICATED_DAYS" env-default:"365"`
-	RefreshWindowDays int `env:"TTL_REFRESH_WINDOW_DAYS" env-default:"7"`
 }
 
 type SnowflakeConfig struct {
