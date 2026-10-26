@@ -343,30 +343,38 @@ func (s *Service) ListCalendars(ctx context.Context, userID string) (*CalendarLi
 	return &CalendarListResponse{Items: items}, nil
 }
 
-func (s *Service) GetCalendar(ctx context.Context, userID, calendarID string) (*CalendarResponse, error) {
-	log := s.log.With("op", "GetCalendar", "calendar_id", calendarID, "user_id", userID)
-	log.Info("getting calendar")
-
+func (s *Service) getOwnedCalendar(ctx context.Context, log *slog.Logger, userID, calendarID string) (db.CalendarLink, pgtype.UUID, error) {
 	calPgID := uuidToPgtype(calendarID)
-
 	cal, err := s.storage.GetCalendarByID(ctx, calPgID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			log.Warn("calendar not found")
-			return nil, ErrCalendarNotFound
+			return db.CalendarLink{}, pgtype.UUID{}, ErrCalendarNotFound
 		}
 		log.Error("get calendar failed", "error", err)
-		return nil, fmt.Errorf("get calendar: %w", err)
+		return db.CalendarLink{}, pgtype.UUID{}, fmt.Errorf("get calendar: %w", err)
 	}
 
 	uid, err := uuid.Parse(userID)
 	if err != nil {
 		log.Warn("invalid user id", "error", err)
-		return nil, ErrInvalidInput
+		return db.CalendarLink{}, pgtype.UUID{}, ErrInvalidInput
 	}
 	if !cal.OwnerID.Valid || cal.OwnerID.Bytes != uid {
 		log.Warn("not calendar owner")
-		return nil, ErrNotOwner
+		return db.CalendarLink{}, pgtype.UUID{}, ErrNotOwner
+	}
+
+	return cal, calPgID, nil
+}
+
+func (s *Service) GetCalendar(ctx context.Context, userID, calendarID string) (*CalendarResponse, error) {
+	log := s.log.With("op", "GetCalendar", "calendar_id", calendarID, "user_id", userID)
+	log.Info("getting calendar")
+
+	cal, _, err := s.getOwnedCalendar(ctx, log, userID, calendarID)
+	if err != nil {
+		return nil, err
 	}
 
 	return s.buildCalendarResponse(ctx, cal)
@@ -376,26 +384,9 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 	log := s.log.With("op", "UpdateCalendar", "calendar_id", calendarID, "user_id", userID)
 	log.Info("updating calendar")
 
-	calPgID := uuidToPgtype(calendarID)
-
-	cal, err := s.storage.GetCalendarByID(ctx, calPgID)
+	cal, calPgID, err := s.getOwnedCalendar(ctx, log, userID, calendarID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			log.Warn("calendar not found")
-			return nil, ErrCalendarNotFound
-		}
-		log.Error("get calendar failed", "error", err)
-		return nil, fmt.Errorf("get calendar: %w", err)
-	}
-
-	uid, err := uuid.Parse(userID)
-	if err != nil {
-		log.Warn("invalid user id", "error", err)
-		return nil, ErrInvalidInput
-	}
-	if !cal.OwnerID.Valid || cal.OwnerID.Bytes != uid {
-		log.Warn("not calendar owner")
-		return nil, ErrNotOwner
+		return nil, err
 	}
 
 	var name pgtype.Text
@@ -415,7 +406,16 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 		formatTitles = pgtype.Bool{Bool: *req.FormatEventTitles, Valid: true}
 	}
 
-	cal, err = s.storage.UpdateCalendarFields(ctx, db.UpdateCalendarFieldsParams{
+	tx, err := s.storage.Pool.Begin(ctx)
+	if err != nil {
+		log.Error("begin tx failed", "error", err)
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	qtx := s.storage.Queries.WithTx(tx)
+
+	cal, err = qtx.UpdateCalendarFields(ctx, db.UpdateCalendarFieldsParams{
 		ID:                calPgID,
 		Name:              name,
 		Description:       desc,
@@ -428,15 +428,6 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 	}
 
 	if req.Courses != nil {
-		tx, err := s.storage.Pool.Begin(ctx)
-		if err != nil {
-			log.Error("begin tx failed", "error", err)
-			return nil, fmt.Errorf("begin tx: %w", err)
-		}
-		defer tx.Rollback(ctx)
-
-		qtx := s.storage.Queries.WithTx(tx)
-
 		if err := qtx.DeleteCalendarCoursesByCalendar(ctx, calPgID); err != nil {
 			log.Error("delete courses failed", "error", err)
 			return nil, fmt.Errorf("delete courses: %w", err)
@@ -446,19 +437,15 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 			log.Warn("validate/insert courses failed", "error", err)
 			return nil, err
 		}
-
-		if err := tx.Commit(ctx); err != nil {
-			log.Error("commit tx failed", "error", err)
-			return nil, fmt.Errorf("commit tx: %w", err)
-		}
-
-		s.refreshCurricula(ctx, log, req.Courses)
 	}
 
-	cal, err = s.storage.GetCalendarByID(ctx, calPgID)
-	if err != nil {
-		log.Error("get updated calendar failed", "error", err)
-		return nil, fmt.Errorf("get updated calendar: %w", err)
+	if err := tx.Commit(ctx); err != nil {
+		log.Error("commit tx failed", "error", err)
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+
+	if req.Courses != nil {
+		s.refreshCurricula(ctx, log, req.Courses)
 	}
 
 	log.Info("calendar updated")
@@ -469,26 +456,9 @@ func (s *Service) DeleteCalendar(ctx context.Context, userID, calendarID string)
 	log := s.log.With("op", "DeleteCalendar", "calendar_id", calendarID, "user_id", userID)
 	log.Info("deleting calendar")
 
-	calPgID := uuidToPgtype(calendarID)
-
-	cal, err := s.storage.GetCalendarByID(ctx, calPgID)
+	_, calPgID, err := s.getOwnedCalendar(ctx, log, userID, calendarID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			log.Warn("calendar not found")
-			return ErrCalendarNotFound
-		}
-		log.Error("get calendar failed", "error", err)
-		return fmt.Errorf("get calendar: %w", err)
-	}
-
-	uid, err := uuid.Parse(userID)
-	if err != nil {
-		log.Warn("invalid user id", "error", err)
-		return ErrInvalidInput
-	}
-	if !cal.OwnerID.Valid || cal.OwnerID.Bytes != uid {
-		log.Warn("not calendar owner")
-		return ErrNotOwner
+		return err
 	}
 
 	if err := s.storage.DeleteCalendar(ctx, calPgID); err != nil {
