@@ -13,4 +13,7 @@ var (
 	ErrInvalidInput           = errors.New("invalid input data")
 	ErrScraperUnavailable     = errors.New("scraper service unavailable")
 	ErrInvalidLang            = errors.New("invalid language, must be 'it' or 'en'")
+	ErrInvalidFamilyHash      = errors.New("invalid event family hash")
+	ErrTooManyFamilies        = errors.New("too many excluded event families")
+	ErrUnknownFamily          = errors.New("unknown event family hash")
 )
