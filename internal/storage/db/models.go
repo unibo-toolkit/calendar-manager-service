@@ -63,6 +63,13 @@ type CalendarCourse struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
+type CalendarExcludedFamily struct {
+	ID         pgtype.UUID        `json:"id"`
+	CalendarID pgtype.UUID        `json:"calendar_id"`
+	FamilyHash string             `json:"family_hash"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
 type CalendarLink struct {
 	ID                pgtype.UUID        `json:"id"`
 	Slug              string             `json:"slug"`
@@ -205,6 +212,7 @@ type TimetableEvent struct {
 	ContentHash   string             `json:"content_hash"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	FamilyHash    pgtype.Text        `json:"family_hash"`
 }
 
 type User struct {

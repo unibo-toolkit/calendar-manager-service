@@ -41,6 +41,7 @@ type CalendarResponse struct {
 	TTLExpiresAt      time.Time            `json:"ttl_expires_at"`
 	OwnerID           *string              `json:"owner_id"`
 	Courses           []CourseResponseItem `json:"courses"`
+	ExcludedFamilies  []string             `json:"excluded_families"`
 	CreatedAt         time.Time            `json:"created_at"`
 }
 
@@ -114,6 +115,20 @@ type NextEventInfo struct {
 type ScraperClient struct {
 	baseURL    string
 	httpClient *http.Client
+}
+
+type PublicCalendarResponse struct {
+	ID                string               `json:"id"`
+	Name              string               `json:"name"`
+	Slug              string               `json:"slug"`
+	Lang              string               `json:"lang"`
+	FormatEventTitles bool                 `json:"format_event_titles"`
+	Courses           []CourseResponseItem `json:"courses"`
+	ExcludedFamilies  []string             `json:"excluded_families"`
+	Claimed           bool                 `json:"claimed"`
+	TotalEvents       int32                `json:"total_events"`
+	TTLExpiresAt      time.Time            `json:"ttl_expires_at"`
+	CreatedAt         time.Time            `json:"created_at"`
 }
 
 func NewScraperClient(baseURL string, timeoutSec int) *ScraperClient {
@@ -207,6 +222,13 @@ func (s *Service) CreateCalendar(ctx context.Context, userID string, req CreateC
 	if err := s.validateAndInsertCourses(ctx, qtx, cal.ID, req.Courses); err != nil {
 		log.Warn("validate/insert courses failed", "error", err)
 		return nil, err
+	}
+
+	if req.ExcludedFamilies != nil {
+		if err := s.replaceExcludedFamilies(ctx, qtx, cal.ID, req.ExcludedFamilies); err != nil {
+			log.Warn("replace excluded families failed", "error", err)
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -439,6 +461,13 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 		}
 	}
 
+	if req.ExcludedFamilies != nil {
+		if err := s.replaceExcludedFamilies(ctx, qtx, calPgID, req.ExcludedFamilies); err != nil {
+			log.Warn("replace excluded families failed", "error", err)
+			return nil, err
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		log.Error("commit tx failed", "error", err)
 		return nil, fmt.Errorf("commit tx: %w", err)
@@ -516,19 +545,6 @@ func (s *Service) ClaimCalendar(ctx context.Context, userID, calendarID string) 
 	return s.buildCalendarResponse(ctx, claimed)
 }
 
-type PublicCalendarResponse struct {
-	ID                string               `json:"id"`
-	Name              string               `json:"name"`
-	Slug              string               `json:"slug"`
-	Lang              string               `json:"lang"`
-	FormatEventTitles bool                 `json:"format_event_titles"`
-	Courses           []CourseResponseItem `json:"courses"`
-	Claimed           bool                 `json:"claimed"`
-	TotalEvents       int32                `json:"total_events"`
-	TTLExpiresAt      time.Time            `json:"ttl_expires_at"`
-	CreatedAt         time.Time            `json:"created_at"`
-}
-
 func (s *Service) GetPublicCalendar(ctx context.Context, slug string) (*PublicCalendarResponse, error) {
 	log := s.log.With("op", "GetPublicCalendar", "slug", slug)
 	log.Info("getting public calendar")
@@ -568,6 +584,7 @@ func (s *Service) GetPublicCalendar(ctx context.Context, slug string) (*PublicCa
 		Lang:              resp.Lang,
 		FormatEventTitles: resp.FormatEventTitles,
 		Courses:           resp.Courses,
+		ExcludedFamilies:  resp.ExcludedFamilies,
 		Claimed:           cal.OwnerID.Valid && cal.OwnerID.Bytes != uuid.Nil,
 		TotalEvents:       totalEvents,
 		TTLExpiresAt:      cal.TtlExpiresAt.Time,
@@ -715,6 +732,44 @@ func (s *Service) validateAndInsertCourses(ctx context.Context, qtx *db.Queries,
 	return nil
 }
 
+func (s *Service) replaceExcludedFamilies(ctx context.Context, qtx *db.Queries, calendarID pgtype.UUID, hashes []string) error {
+	seen := make(map[string]bool, len(hashes))
+	unique := make([]string, 0, len(hashes))
+	for _, hash := range hashes {
+		if seen[hash] {
+			continue
+		}
+		seen[hash] = true
+		unique = append(unique, hash)
+	}
+
+	known, err := qtx.CountKnownFamilies(ctx, db.CountKnownFamiliesParams{
+		CalendarID:   calendarID,
+		FamilyHashes: unique,
+	})
+	if err != nil {
+		return fmt.Errorf("count known families: %w", err)
+	}
+	if int(known) != len(unique) {
+		return ErrUnknownFamily
+	}
+
+	if err := qtx.DeleteExcludedFamiliesNotIn(ctx, db.DeleteExcludedFamiliesNotInParams{
+		CalendarID:   calendarID,
+		FamilyHashes: unique,
+	}); err != nil {
+		return fmt.Errorf("delete excluded families: %w", err)
+	}
+
+	if err := qtx.InsertExcludedFamilies(ctx, db.InsertExcludedFamiliesParams{
+		CalendarID:   calendarID,
+		FamilyHashes: unique,
+	}); err != nil {
+		return fmt.Errorf("insert excluded families: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) refreshCurricula(ctx context.Context, log *slog.Logger, courses []CourseInputItem) {
 	seen := make(map[string]bool)
 	var subjectIDs []string
@@ -823,6 +878,11 @@ func (s *Service) buildCalendarResponse(ctx context.Context, cal db.CalendarLink
 		}
 	}
 
+	excludedFamilies, err := s.storage.ListExcludedFamilies(ctx, cal.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list excluded families: %w", err)
+	}
+
 	var ownerIDStr *string
 	if cal.OwnerID.Valid {
 		s := pgtypeUUIDToString(cal.OwnerID)
@@ -845,6 +905,7 @@ func (s *Service) buildCalendarResponse(ctx context.Context, cal db.CalendarLink
 		TTLExpiresAt:      cal.TtlExpiresAt.Time,
 		OwnerID:           ownerIDStr,
 		Courses:           courseItems,
+		ExcludedFamilies:  excludedFamilies,
 		CreatedAt:         cal.CreatedAt.Time,
 	}, nil
 }
