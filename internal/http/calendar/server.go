@@ -6,12 +6,17 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/unibo-toolkit/calendar-manager-service/internal/config"
 	"github.com/unibo-toolkit/calendar-manager-service/internal/storage"
 )
+
+const maxExcludedFamilies = 300
+
+var familyHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type Server struct {
 	log     *slog.Logger
@@ -26,6 +31,7 @@ type CreateCalendarRequest struct {
 	Lang              string            `json:"lang"`
 	FormatEventTitles *bool             `json:"format_event_titles"`
 	Courses           []CourseInputItem `json:"courses" binding:"required,min=1,dive"`
+	ExcludedFamilies  []string          `json:"excluded_families"`
 }
 
 type CourseInputItem struct {
@@ -39,6 +45,7 @@ type UpdateCalendarRequest struct {
 	Lang              *string           `json:"lang,omitempty"`
 	FormatEventTitles *bool             `json:"format_event_titles,omitempty"`
 	Courses           []CourseInputItem `json:"courses,omitempty"`
+	ExcludedFamilies  []string          `json:"excluded_families,omitempty"`
 }
 
 func New(log *slog.Logger, cfg *config.Config, st *storage.Storage) *Server {
@@ -106,6 +113,18 @@ func decodeRoles(raw string) []string {
 	return roles
 }
 
+func validateFamilyHashes(hashes []string) error {
+	if len(hashes) > maxExcludedFamilies {
+		return ErrTooManyFamilies
+	}
+	for _, hash := range hashes {
+		if !familyHashPattern.MatchString(hash) {
+			return ErrInvalidFamilyHash
+		}
+	}
+	return nil
+}
+
 func (s *Server) requireAuth(c *gin.Context) {
 	if c.GetString("user_id") == "" {
 		c.AbortWithStatusJSON(401, gin.H{"error": ErrUnauthorized.Error()})
@@ -126,6 +145,10 @@ func (s *Server) handleCreateCalendar(c *gin.Context) {
 	}
 	if req.Lang != "it" && req.Lang != "en" {
 		c.JSON(400, gin.H{"error": ErrInvalidLang.Error()})
+		return
+	}
+	if err := validateFamilyHashes(req.ExcludedFamilies); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -201,6 +224,10 @@ func (s *Server) handleUpdateCalendar(c *gin.Context) {
 	}
 	if req.Lang != nil && *req.Lang != "it" && *req.Lang != "en" {
 		c.JSON(400, gin.H{"error": ErrInvalidLang.Error()})
+		return
+	}
+	if err := validateFamilyHashes(req.ExcludedFamilies); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -291,7 +318,8 @@ func (s *Server) handleError(c *gin.Context, err error) {
 	case errors.Is(err, ErrCurriculumNotFound),
 		errors.Is(err, ErrSubjectWrongCurriculum),
 		errors.Is(err, ErrInvalidInput),
-		errors.Is(err, ErrInvalidLang):
+		errors.Is(err, ErrInvalidLang),
+		errors.Is(err, ErrUnknownFamily):
 		c.JSON(400, gin.H{"error": err.Error()})
 	default:
 		s.log.Error("internal error", "error", err)

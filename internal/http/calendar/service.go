@@ -41,6 +41,7 @@ type CalendarResponse struct {
 	TTLExpiresAt      time.Time            `json:"ttl_expires_at"`
 	OwnerID           *string              `json:"owner_id"`
 	Courses           []CourseResponseItem `json:"courses"`
+	ExcludedFamilies  []string             `json:"excluded_families"`
 	CreatedAt         time.Time            `json:"created_at"`
 }
 
@@ -114,6 +115,20 @@ type NextEventInfo struct {
 type ScraperClient struct {
 	baseURL    string
 	httpClient *http.Client
+}
+
+type PublicCalendarResponse struct {
+	ID                string               `json:"id"`
+	Name              string               `json:"name"`
+	Slug              string               `json:"slug"`
+	Lang              string               `json:"lang"`
+	FormatEventTitles bool                 `json:"format_event_titles"`
+	Courses           []CourseResponseItem `json:"courses"`
+	ExcludedFamilies  []string             `json:"excluded_families"`
+	Claimed           bool                 `json:"claimed"`
+	TotalEvents       int32                `json:"total_events"`
+	TTLExpiresAt      time.Time            `json:"ttl_expires_at"`
+	CreatedAt         time.Time            `json:"created_at"`
 }
 
 func NewScraperClient(baseURL string, timeoutSec int) *ScraperClient {
@@ -207,6 +222,13 @@ func (s *Service) CreateCalendar(ctx context.Context, userID string, req CreateC
 	if err := s.validateAndInsertCourses(ctx, qtx, cal.ID, req.Courses); err != nil {
 		log.Warn("validate/insert courses failed", "error", err)
 		return nil, err
+	}
+
+	if req.ExcludedFamilies != nil {
+		if err := s.replaceExcludedFamilies(ctx, qtx, cal.ID, req.ExcludedFamilies); err != nil {
+			log.Warn("replace excluded families failed", "error", err)
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -343,30 +365,38 @@ func (s *Service) ListCalendars(ctx context.Context, userID string) (*CalendarLi
 	return &CalendarListResponse{Items: items}, nil
 }
 
-func (s *Service) GetCalendar(ctx context.Context, userID, calendarID string) (*CalendarResponse, error) {
-	log := s.log.With("op", "GetCalendar", "calendar_id", calendarID, "user_id", userID)
-	log.Info("getting calendar")
-
+func (s *Service) getOwnedCalendar(ctx context.Context, log *slog.Logger, userID, calendarID string) (db.CalendarLink, pgtype.UUID, error) {
 	calPgID := uuidToPgtype(calendarID)
-
 	cal, err := s.storage.GetCalendarByID(ctx, calPgID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			log.Warn("calendar not found")
-			return nil, ErrCalendarNotFound
+			return db.CalendarLink{}, pgtype.UUID{}, ErrCalendarNotFound
 		}
 		log.Error("get calendar failed", "error", err)
-		return nil, fmt.Errorf("get calendar: %w", err)
+		return db.CalendarLink{}, pgtype.UUID{}, fmt.Errorf("get calendar: %w", err)
 	}
 
 	uid, err := uuid.Parse(userID)
 	if err != nil {
 		log.Warn("invalid user id", "error", err)
-		return nil, ErrInvalidInput
+		return db.CalendarLink{}, pgtype.UUID{}, ErrInvalidInput
 	}
 	if !cal.OwnerID.Valid || cal.OwnerID.Bytes != uid {
 		log.Warn("not calendar owner")
-		return nil, ErrNotOwner
+		return db.CalendarLink{}, pgtype.UUID{}, ErrNotOwner
+	}
+
+	return cal, calPgID, nil
+}
+
+func (s *Service) GetCalendar(ctx context.Context, userID, calendarID string) (*CalendarResponse, error) {
+	log := s.log.With("op", "GetCalendar", "calendar_id", calendarID, "user_id", userID)
+	log.Info("getting calendar")
+
+	cal, _, err := s.getOwnedCalendar(ctx, log, userID, calendarID)
+	if err != nil {
+		return nil, err
 	}
 
 	return s.buildCalendarResponse(ctx, cal)
@@ -376,26 +406,9 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 	log := s.log.With("op", "UpdateCalendar", "calendar_id", calendarID, "user_id", userID)
 	log.Info("updating calendar")
 
-	calPgID := uuidToPgtype(calendarID)
-
-	cal, err := s.storage.GetCalendarByID(ctx, calPgID)
+	cal, calPgID, err := s.getOwnedCalendar(ctx, log, userID, calendarID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			log.Warn("calendar not found")
-			return nil, ErrCalendarNotFound
-		}
-		log.Error("get calendar failed", "error", err)
-		return nil, fmt.Errorf("get calendar: %w", err)
-	}
-
-	uid, err := uuid.Parse(userID)
-	if err != nil {
-		log.Warn("invalid user id", "error", err)
-		return nil, ErrInvalidInput
-	}
-	if !cal.OwnerID.Valid || cal.OwnerID.Bytes != uid {
-		log.Warn("not calendar owner")
-		return nil, ErrNotOwner
+		return nil, err
 	}
 
 	var name pgtype.Text
@@ -415,7 +428,16 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 		formatTitles = pgtype.Bool{Bool: *req.FormatEventTitles, Valid: true}
 	}
 
-	cal, err = s.storage.UpdateCalendarFields(ctx, db.UpdateCalendarFieldsParams{
+	tx, err := s.storage.Pool.Begin(ctx)
+	if err != nil {
+		log.Error("begin tx failed", "error", err)
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	qtx := s.storage.Queries.WithTx(tx)
+
+	cal, err = qtx.UpdateCalendarFields(ctx, db.UpdateCalendarFieldsParams{
 		ID:                calPgID,
 		Name:              name,
 		Description:       desc,
@@ -428,15 +450,6 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 	}
 
 	if req.Courses != nil {
-		tx, err := s.storage.Pool.Begin(ctx)
-		if err != nil {
-			log.Error("begin tx failed", "error", err)
-			return nil, fmt.Errorf("begin tx: %w", err)
-		}
-		defer tx.Rollback(ctx)
-
-		qtx := s.storage.Queries.WithTx(tx)
-
 		if err := qtx.DeleteCalendarCoursesByCalendar(ctx, calPgID); err != nil {
 			log.Error("delete courses failed", "error", err)
 			return nil, fmt.Errorf("delete courses: %w", err)
@@ -446,19 +459,22 @@ func (s *Service) UpdateCalendar(ctx context.Context, userID, calendarID string,
 			log.Warn("validate/insert courses failed", "error", err)
 			return nil, err
 		}
-
-		if err := tx.Commit(ctx); err != nil {
-			log.Error("commit tx failed", "error", err)
-			return nil, fmt.Errorf("commit tx: %w", err)
-		}
-
-		s.refreshCurricula(ctx, log, req.Courses)
 	}
 
-	cal, err = s.storage.GetCalendarByID(ctx, calPgID)
-	if err != nil {
-		log.Error("get updated calendar failed", "error", err)
-		return nil, fmt.Errorf("get updated calendar: %w", err)
+	if req.ExcludedFamilies != nil {
+		if err := s.replaceExcludedFamilies(ctx, qtx, calPgID, req.ExcludedFamilies); err != nil {
+			log.Warn("replace excluded families failed", "error", err)
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Error("commit tx failed", "error", err)
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+
+	if req.Courses != nil {
+		s.refreshCurricula(ctx, log, req.Courses)
 	}
 
 	log.Info("calendar updated")
@@ -469,26 +485,9 @@ func (s *Service) DeleteCalendar(ctx context.Context, userID, calendarID string)
 	log := s.log.With("op", "DeleteCalendar", "calendar_id", calendarID, "user_id", userID)
 	log.Info("deleting calendar")
 
-	calPgID := uuidToPgtype(calendarID)
-
-	cal, err := s.storage.GetCalendarByID(ctx, calPgID)
+	_, calPgID, err := s.getOwnedCalendar(ctx, log, userID, calendarID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			log.Warn("calendar not found")
-			return ErrCalendarNotFound
-		}
-		log.Error("get calendar failed", "error", err)
-		return fmt.Errorf("get calendar: %w", err)
-	}
-
-	uid, err := uuid.Parse(userID)
-	if err != nil {
-		log.Warn("invalid user id", "error", err)
-		return ErrInvalidInput
-	}
-	if !cal.OwnerID.Valid || cal.OwnerID.Bytes != uid {
-		log.Warn("not calendar owner")
-		return ErrNotOwner
+		return err
 	}
 
 	if err := s.storage.DeleteCalendar(ctx, calPgID); err != nil {
@@ -546,19 +545,6 @@ func (s *Service) ClaimCalendar(ctx context.Context, userID, calendarID string) 
 	return s.buildCalendarResponse(ctx, claimed)
 }
 
-type PublicCalendarResponse struct {
-	ID                string               `json:"id"`
-	Name              string               `json:"name"`
-	Slug              string               `json:"slug"`
-	Lang              string               `json:"lang"`
-	FormatEventTitles bool                 `json:"format_event_titles"`
-	Courses           []CourseResponseItem `json:"courses"`
-	Claimed           bool                 `json:"claimed"`
-	TotalEvents       int32                `json:"total_events"`
-	TTLExpiresAt      time.Time            `json:"ttl_expires_at"`
-	CreatedAt         time.Time            `json:"created_at"`
-}
-
 func (s *Service) GetPublicCalendar(ctx context.Context, slug string) (*PublicCalendarResponse, error) {
 	log := s.log.With("op", "GetPublicCalendar", "slug", slug)
 	log.Info("getting public calendar")
@@ -598,6 +584,7 @@ func (s *Service) GetPublicCalendar(ctx context.Context, slug string) (*PublicCa
 		Lang:              resp.Lang,
 		FormatEventTitles: resp.FormatEventTitles,
 		Courses:           resp.Courses,
+		ExcludedFamilies:  resp.ExcludedFamilies,
 		Claimed:           cal.OwnerID.Valid && cal.OwnerID.Bytes != uuid.Nil,
 		TotalEvents:       totalEvents,
 		TTLExpiresAt:      cal.TtlExpiresAt.Time,
@@ -745,6 +732,44 @@ func (s *Service) validateAndInsertCourses(ctx context.Context, qtx *db.Queries,
 	return nil
 }
 
+func (s *Service) replaceExcludedFamilies(ctx context.Context, qtx *db.Queries, calendarID pgtype.UUID, hashes []string) error {
+	seen := make(map[string]bool, len(hashes))
+	unique := make([]string, 0, len(hashes))
+	for _, hash := range hashes {
+		if seen[hash] {
+			continue
+		}
+		seen[hash] = true
+		unique = append(unique, hash)
+	}
+
+	known, err := qtx.CountKnownFamilies(ctx, db.CountKnownFamiliesParams{
+		CalendarID:   calendarID,
+		FamilyHashes: unique,
+	})
+	if err != nil {
+		return fmt.Errorf("count known families: %w", err)
+	}
+	if int(known) != len(unique) {
+		return ErrUnknownFamily
+	}
+
+	if err := qtx.DeleteExcludedFamiliesNotIn(ctx, db.DeleteExcludedFamiliesNotInParams{
+		CalendarID:   calendarID,
+		FamilyHashes: unique,
+	}); err != nil {
+		return fmt.Errorf("delete excluded families: %w", err)
+	}
+
+	if err := qtx.InsertExcludedFamilies(ctx, db.InsertExcludedFamiliesParams{
+		CalendarID:   calendarID,
+		FamilyHashes: unique,
+	}); err != nil {
+		return fmt.Errorf("insert excluded families: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) refreshCurricula(ctx context.Context, log *slog.Logger, courses []CourseInputItem) {
 	seen := make(map[string]bool)
 	var subjectIDs []string
@@ -853,6 +878,11 @@ func (s *Service) buildCalendarResponse(ctx context.Context, cal db.CalendarLink
 		}
 	}
 
+	excludedFamilies, err := s.storage.ListExcludedFamilies(ctx, cal.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list excluded families: %w", err)
+	}
+
 	var ownerIDStr *string
 	if cal.OwnerID.Valid {
 		s := pgtypeUUIDToString(cal.OwnerID)
@@ -875,6 +905,7 @@ func (s *Service) buildCalendarResponse(ctx context.Context, cal db.CalendarLink
 		TTLExpiresAt:      cal.TtlExpiresAt.Time,
 		OwnerID:           ownerIDStr,
 		Courses:           courseItems,
+		ExcludedFamilies:  excludedFamilies,
 		CreatedAt:         cal.CreatedAt.Time,
 	}, nil
 }

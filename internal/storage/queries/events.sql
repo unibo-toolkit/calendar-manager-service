@@ -24,6 +24,11 @@ WHERE te.subject_id IN (
     JOIN calendar_courses cc ON cc.id = cs.calendar_course_id
     WHERE cc.calendar_id = $1
 )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM calendar_excluded_families f
+    WHERE f.calendar_id = $1 AND f.family_hash = te.family_hash
+)
 ORDER BY te.start_datetime;
 
 -- name: CountEventsForCalendar :one
@@ -34,6 +39,11 @@ WHERE te.subject_id IN (
     FROM calendar_subjects cs
     JOIN calendar_courses cc ON cc.id = cs.calendar_course_id
     WHERE cc.calendar_id = $1
+)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM calendar_excluded_families f
+    WHERE f.calendar_id = $1 AND f.family_hash = te.family_hash
 );
 
 -- name: GetUserEventStats :one
@@ -41,12 +51,18 @@ SELECT
     COUNT(*)::integer AS events_count,
     COALESCE(SUM(EXTRACT(EPOCH FROM (te.end_datetime - te.start_datetime)) / 3600), 0)::double precision AS total_hours
 FROM timetable_events te
-WHERE te.subject_id IN (
-    SELECT cs.subject_id
+WHERE EXISTS (
+    SELECT 1
     FROM calendar_subjects cs
     JOIN calendar_courses cc ON cc.id = cs.calendar_course_id
     JOIN calendar_links cl ON cl.id = cc.calendar_id
     WHERE cl.owner_id = $1
+      AND cs.subject_id = te.subject_id
+      AND NOT EXISTS (
+        SELECT 1
+        FROM calendar_excluded_families f
+        WHERE f.calendar_id = cl.id AND f.family_hash = te.family_hash
+    )
 )
   AND te.start_datetime >= $2
   AND te.start_datetime < $3;
@@ -57,12 +73,18 @@ SELECT
     te.start_datetime,
     te.end_datetime
 FROM timetable_events te
-WHERE te.subject_id IN (
-    SELECT cs.subject_id
+WHERE EXISTS (
+    SELECT 1
     FROM calendar_subjects cs
     JOIN calendar_courses cc ON cc.id = cs.calendar_course_id
     JOIN calendar_links cl ON cl.id = cc.calendar_id
     WHERE cl.owner_id = $1
+      AND cs.subject_id = te.subject_id
+      AND NOT EXISTS (
+        SELECT 1
+        FROM calendar_excluded_families f
+        WHERE f.calendar_id = cl.id AND f.family_hash = te.family_hash
+    )
 )
   AND te.start_datetime >= $2
 ORDER BY te.start_datetime
@@ -76,7 +98,14 @@ WHERE owner_id = $1;
 -- name: GetTotalEventsCount :one
 SELECT COUNT(DISTINCT te.id)::bigint AS total
 FROM timetable_events te
-WHERE te.subject_id IN (
-    SELECT cs.subject_id
+WHERE EXISTS (
+    SELECT 1
     FROM calendar_subjects cs
+    JOIN calendar_courses cc ON cc.id = cs.calendar_course_id
+    WHERE cs.subject_id = te.subject_id
+      AND NOT EXISTS (
+        SELECT 1
+        FROM calendar_excluded_families f
+        WHERE f.calendar_id = cc.calendar_id AND f.family_hash = te.family_hash
+    )
 );
